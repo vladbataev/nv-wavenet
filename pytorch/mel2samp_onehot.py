@@ -34,6 +34,7 @@ import random
 import torch
 import torch.utils.data
 import sys
+import numpy as np
 
 import utils
 
@@ -72,8 +73,9 @@ class Mel2SampOnehot(torch.utils.data.Dataset):
     
     def __getitem__(self, index):
         # Read audio
-        filename = self.audio_files[index]
-        audio, sampling_rate = utils.load_wav_to_torch(filename)
+        audio_filename, mel_filename = self.audio_files[index]
+
+        audio, sampling_rate = utils.load_wav_to_torch(audio_filename)
         if sampling_rate != self.sampling_rate:
             raise ValueError("{} SR doesn't match target {} SR".format(
                 sampling_rate, self.sampling_rate))
@@ -86,7 +88,11 @@ class Mel2SampOnehot(torch.utils.data.Dataset):
         else:
             audio = torch.nn.functional.pad(audio, (0, self.segment_length - audio.size(0)), 'constant').data
 
-        mel = self.get_mel(audio)
+        if mel_filename != "":
+            mel = np.load(mel_filename)
+            mel = torch.FloatTensor(mel)
+        else:
+            mel = self.get_mel(audio)
         audio = utils.mu_law_encode(audio / utils.MAX_WAV_VALUE, self.mu_quantization)
         return (mel, audio)
     

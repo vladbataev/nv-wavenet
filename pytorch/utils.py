@@ -37,14 +37,14 @@ def load_wav_to_torch(full_path):
     sampling_rate, data = read(full_path)
     return torch.FloatTensor(data.astype(np.float32)), sampling_rate
 
-def files_to_list(filename):
+def files_to_list(filename, delimiter=","):
     """
     Takes a text file of filenames and makes a list of filenames
     """
     with open(filename, encoding='utf-8') as f:
         files = f.readlines()
 
-    files = [f.rstrip() for f in files]
+    files = [f.rstrip().split(delimiter) for f in files]
     return files
 
 def load_filepaths_and_text(filename, split="|"):
