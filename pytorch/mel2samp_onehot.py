@@ -58,7 +58,9 @@ class Mel2SampOnehot(torch.utils.data.Dataset):
                                     hop_length=hop_length,
                                     win_length=win_length,
                                     sampling_rate=sampling_rate)
-        
+
+        self.win_length = win_length
+        self.hop_length = hop_length
         self.segment_length = segment_length
         self.mu_quantization = mu_quantization
         self.sampling_rate = sampling_rate
@@ -79,20 +81,24 @@ class Mel2SampOnehot(torch.utils.data.Dataset):
         if sampling_rate != self.sampling_rate:
             raise ValueError("{} SR doesn't match target {} SR".format(
                 sampling_rate, self.sampling_rate))
-        
-            # Take segment
+
+        if mel_filename != "":
+            mel = np.load(mel_filename)
+        else:
+            mel = self.get_mel(audio)
+            mel = torch.from_numpy(mel.T)
+
+        # Take segment
         if audio.size(0) >= self.segment_length:
             max_audio_start = audio.size(0) - self.segment_length
             audio_start = random.randint(0, max_audio_start)
             audio = audio[audio_start:audio_start+self.segment_length]
+            mel_start = audio_start // self.hop_length
+            shifted_start = max(mel_start - np.ceil(self.win_length / self.hop_length), 0)
+            mel = mel[:, shifted_start: mel_start + np.ceil(self.segment_length / self.hop_length)]
         else:
             audio = torch.nn.functional.pad(audio, (0, self.segment_length - audio.size(0)), 'constant').data
 
-        if mel_filename != "":
-            mel = np.load(mel_filename)
-            mel = torch.FloatTensor(mel)
-        else:
-            mel = self.get_mel(audio)
         audio = utils.mu_law_encode(audio / utils.MAX_WAV_VALUE, self.mu_quantization)
         return (mel, audio)
     
