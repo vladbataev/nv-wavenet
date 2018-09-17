@@ -85,6 +85,7 @@ class Mel2SampOnehot(torch.utils.data.Dataset):
 
         if mel_filename != "":
             mel = np.load(mel_filename)
+            mel = torch.from_numpy(mel)
         else:
             mel = self.get_mel(audio)
 
@@ -95,10 +96,12 @@ class Mel2SampOnehot(torch.utils.data.Dataset):
             audio = audio[audio_start:audio_start + self.segment_length]
             mel_start = audio_start // self.hop_length
             mel = mel[mel_start: mel_start + self.mel_segment_length]
+            if mel.size(0) < self.mel_segment_length:
+                mel = torch.nn.functional.pad(mel, (0, 0, 0, self.mel_segment_length - mel
+.size(0)), 'constant').data
         else:
-            audio = torch.nn.functional.pad(audio, (0, self.segment_length - audio.size(0)), 'constant').data
-            mel = torch.nn.functional.pad(mel, (0, self.mel_segment_length - mel.size(0)), 'constant').data
-
+            audio = torch.nn.functional.pad(audio, (0, 0, 0, self.segment_length - audio.size(0)), 'constant').data
+            mel = torch.nn.functional.pad(mel, (0, 0, 0, self.mel_segment_length - mel.size(0)), 'constant').data
         mel = mel.transpose(1, 0)
         audio = utils.mu_law_encode(audio / utils.MAX_WAV_VALUE, self.mu_quantization)
         return (mel, audio)

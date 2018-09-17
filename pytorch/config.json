@@ -10,13 +10,13 @@
     },
 
     "data_config": {
-        "training_files": "train_files.txt",
-        "segment_length": 16000,
+        "training_files": "wavenet_data.txt",
+        "segment_length": 11025,
         "mu_quantization": 256,
-        "filter_length": 800,
-        "hop_length": 200,
-        "win_length": 800,
-        "sampling_rate": 16000
+        "filter_length": 1100,
+        "hop_length": 275,
+        "win_length": 1100,
+        "sampling_rate": 22050
     },
 
     "dist_config": {
@@ -32,7 +32,7 @@
         "n_skip_channels": 256,
         "n_out_channels": 256,
         "n_cond_channels": 80,
-        "upsamp_window": 800,
-        "upsamp_stride": 200
+        "upsamp_window": 1100,
+        "upsamp_stride": 275
     }
 }
