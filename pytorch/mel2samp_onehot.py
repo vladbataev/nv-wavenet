@@ -97,8 +97,7 @@ class Mel2SampOnehot(torch.utils.data.Dataset):
             mel_start = audio_start // self.hop_length
             mel = mel[mel_start: mel_start + self.mel_segment_length]
             if mel.size(0) < self.mel_segment_length:
-                mel = torch.nn.functional.pad(mel, (0, 0, 0, self.mel_segment_length - mel
-.size(0)), 'constant').data
+                mel = torch.nn.functional.pad(mel, (0, 0, 0, self.mel_segment_length - mel.size(0)), 'constant').data
         else:
             audio = torch.nn.functional.pad(audio, (0, 0, 0, self.segment_length - audio.size(0)), 'constant').data
             mel = torch.nn.functional.pad(mel, (0, 0, 0, self.mel_segment_length - mel.size(0)), 'constant').data
@@ -141,12 +140,14 @@ if __name__ == "__main__":
     data_config = config["data_config"]
     mel_factory = Mel2SampOnehot(**data_config)  
     
-    for filepath in filepaths:
-        audio, sampling_rate = utils.load_wav_to_torch(filepath)
-        assert(sampling_rate == mel_factory.sampling_rate)
-        melspectrogram = mel_factory.get_mel(audio)
-        filename = os.path.basename(filepath)
+    for audio_filepath, mel_filepath  in filepaths:
+        if mel_filepath != "":
+            melspectrogram = torch.from_numpy((np.load(mel_filepath)).T)
+        else:
+            audio, sampling_rate = utils.load_wav_to_torch(audio_filepath)
+            assert (sampling_rate == mel_factory.sampling_rate)
+            melspectrogram = mel_factory.get_mel(audio)
+        filename = os.path.basename(audio_filepath)
         new_filepath = args.output_dir + '/' + filename + '.pt'
         print(new_filepath)
         torch.save(melspectrogram, new_filepath)
-
