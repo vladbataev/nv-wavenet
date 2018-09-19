@@ -99,7 +99,7 @@ class Mel2SampOnehot(torch.utils.data.Dataset):
             if mel.size(0) < self.mel_segment_length:
                 mel = torch.nn.functional.pad(mel, (0, 0, 0, self.mel_segment_length - mel.size(0)), 'constant').data
         else:
-            audio = torch.nn.functional.pad(audio, (0, 0, 0, self.segment_length - audio.size(0)), 'constant').data
+            audio = torch.nn.functional.pad(audio, (0, self.segment_length - audio.size(0)), 'constant').data
             mel = torch.nn.functional.pad(mel, (0, 0, 0, self.mel_segment_length - mel.size(0)), 'constant').data
         mel = mel.transpose(1, 0)
         audio = utils.mu_law_encode(audio / utils.MAX_WAV_VALUE, self.mu_quantization)
@@ -140,7 +140,7 @@ if __name__ == "__main__":
     data_config = config["data_config"]
     mel_factory = Mel2SampOnehot(**data_config)  
     
-    for audio_filepath, mel_filepath  in filepaths:
+    for audio_filepath, mel_filepath in filepaths:
         if mel_filepath != "":
             melspectrogram = torch.from_numpy((np.load(mel_filepath)).T)
         else:
