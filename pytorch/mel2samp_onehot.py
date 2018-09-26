@@ -47,7 +47,7 @@ class Mel2SampOnehot(torch.utils.data.Dataset):
     This is the main class that calculates the spectrogram and returns the
     spectrogram, audio pair.
     """
-    def __init__(self, training_files, segment_length, mu_quantization,
+    def __init__(self, training_files, chunk_length, mu_quantization,
                  filter_length, hop_length, win_length, sampling_rate):
         audio_files = utils.files_to_list(training_files)
         self.audio_files = audio_files
@@ -61,10 +61,11 @@ class Mel2SampOnehot(torch.utils.data.Dataset):
 
         self.win_length = win_length
         self.hop_length = hop_length
-        self.segment_length = segment_length
+        self.chunk_length = chunk_length
         self.mu_quantization = mu_quantization
         self.sampling_rate = sampling_rate
-        self.mel_segment_length = int(np.ceil(self.segment_length / self.hop_length))
+        self.mel_segment_length = int(np.ceil(self.chunk_length / self.hop_length))
+        self.segment_length = self.mel_segment_length * self.hop_length + self.win_length
 
     def get_mel(self, audio):
         audio_norm = audio / utils.MAX_WAV_VALUE
@@ -90,14 +91,16 @@ class Mel2SampOnehot(torch.utils.data.Dataset):
             mel = self.get_mel(audio)
 
         # Take segment
-        if audio.size(0) >= self.segment_length:
-            max_audio_start = audio.size(0) - self.segment_length
-            audio_start = random.randint(0, max_audio_start)
-            audio = audio[audio_start:audio_start + self.segment_length]
-            mel_start = audio_start // self.hop_length
+        if mel.size(0) >= self.mel_segment_length:
+            max_mel_start = mel.size(0) - self.mel_segment_length
+            mel_start = random.randint(0, max_mel_start)
             mel = mel[mel_start: mel_start + self.mel_segment_length]
             if mel.size(0) < self.mel_segment_length:
                 mel = torch.nn.functional.pad(mel, (0, 0, 0, self.mel_segment_length - mel.size(0)), 'constant').data
+            audio_start = mel_start * self.hop_length
+            audio = audio[audio_start: audio_start + self.segment_length]
+            if audio.size(0) < self.segment_length:
+                audio = torch.nn.functional.pad(audio, (0, self.segment_length - audio.size(0)), 'constant').data
         else:
             audio = torch.nn.functional.pad(audio, (0, self.segment_length - audio.size(0)), 'constant').data
             mel = torch.nn.functional.pad(mel, (0, 0, 0, self.mel_segment_length - mel.size(0)), 'constant').data

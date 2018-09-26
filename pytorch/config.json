@@ -6,7 +6,8 @@
         "iters_per_checkpoint": 1000,
         "batch_size": 8,
         "seed": 1234,
-        "checkpoint_path": ""
+        "checkpoint_path": "",
+        "log_file": "./log.txt"
     },
 
     "data_config": {

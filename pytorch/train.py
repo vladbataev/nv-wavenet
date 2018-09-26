@@ -81,7 +81,7 @@ def save_checkpoint(model, optimizer, learning_rate, iteration, filepath):
                 'learning_rate': learning_rate}, filepath)
 
 def train(num_gpus, rank, group_name, output_directory, epochs, learning_rate,
-          iters_per_checkpoint, batch_size, seed, checkpoint_path):
+          iters_per_checkpoint, batch_size, seed, checkpoint_path, log_file):
     torch.manual_seed(seed)
     torch.cuda.manual_seed(seed)
     #=====START: ADDED FOR DISTRIBUTED======
@@ -126,7 +126,7 @@ def train(num_gpus, rank, group_name, output_directory, epochs, learning_rate,
     model.train()
     epoch_offset = max(0, int(iteration / len(train_loader)))
     # ================ MAIN TRAINNIG LOOP! ===================
-    with open("./log.txt",  "w") as fout:
+    with open(log_file,  "w") as fout:
         for epoch in range(epoch_offset, epochs):
             print("Epoch: {}".format(epoch))
             print("Epoch: {}".format(epoch), file=fout)
@@ -179,7 +179,6 @@ if __name__ == "__main__":
     dist_config = config["dist_config"]
     global wavenet_config 
     wavenet_config = config["wavenet_config"]
-   
 
     num_gpus = torch.cuda.device_count()
     if num_gpus > 1:
