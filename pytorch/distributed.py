@@ -33,6 +33,7 @@ import argparse
 import torch
 import torch.distributed as dist
 from torch.nn.modules import Module
+from torch.autograd import Variable
 
 def reduce_tensor(tensor, num_gpus):
     rt = tensor.clone()
@@ -130,7 +131,7 @@ def apply_gradient_allreduce(module):
 
     for param in list(module.parameters()):
         def allreduce_hook(*unused):
-            param._execution_engine.queue_callback(allreduce_params)
+            Variable._execution_engine.queue_callback(allreduce_params)
         if param.requires_grad:
             param.register_hook(allreduce_hook)
             dir(param)

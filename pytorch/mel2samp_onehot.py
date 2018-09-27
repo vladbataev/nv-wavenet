@@ -64,8 +64,9 @@ class Mel2SampOnehot(torch.utils.data.Dataset):
         self.chunk_length = chunk_length
         self.mu_quantization = mu_quantization
         self.sampling_rate = sampling_rate
-        self.mel_segment_length = int(np.ceil(self.chunk_length / self.hop_length))
-        self.segment_length = self.mel_segment_length * self.hop_length + self.win_length
+        self.mel_segment_length = self.chunk_length // self.hop_length + \
+                                  int(np.ceil(win_length / hop_length))
+        self.segment_length = self.chunk_length // self.hop_length * self.hop_length + self.win_length
 
     def get_mel(self, audio):
         audio_norm = audio / utils.MAX_WAV_VALUE
