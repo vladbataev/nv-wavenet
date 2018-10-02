@@ -10,7 +10,7 @@ LN_TO_DB = 20 * LN_TO_LOG10
 class AudioProcessor:
     def __init__(self, min_level_db=-50.0, window_size=1024, window_step=256, preemphasis_coef=0.97,
                  lower_edge_hertz=125.0, upper_edge_hertz=7600.0, num_mel_bins=80, ref_level_db=20.0, post_power=1.5,
-                 dbfs_normalization=True, apply_preemphasis=True):
+                 dbfs_normalization=True, apply_preemphasis=True, pad_end=True):
         self.window_size = window_size
         self.window_step = window_step
         self.preemphasis_coef = preemphasis_coef
@@ -22,6 +22,7 @@ class AudioProcessor:
         self.post_power = post_power
         self.dbfs_normalization = dbfs_normalization
         self.apply_preemphasis = apply_preemphasis
+        self.pad_end = pad_end
 
     def preemphasis(self, signals):
         paddings = [
@@ -97,7 +98,7 @@ class AudioProcessor:
             stfts = tf.contrib.signal.stft(signals, frame_length=frame_length, frame_step=frame_step,
                                            fft_length=frame_length,
                                            window_fn=tf.contrib.signal.hamming_window,
-                                           pad_end=True)
+                                           pad_end=self.pad_end)
 
             linear_spectrograms = tf.abs(stfts)
             normed_linear_spectrograms_db = self.linear_scale_to_normalized_log_scale(linear_spectrograms)

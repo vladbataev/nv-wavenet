@@ -98,7 +98,7 @@ class Mel2SampOnehot(torch.utils.data.Dataset):
         if sampling_rate != self.sampling_rate:
             raise ValueError("{} SR doesn't match target {} SR".format(
                 sampling_rate, self.sampling_rate))
-
+        audio = audio / utils.MAX_WAV_VALUE
         if mel_filename != "" and self.load_mel:
             if self.segment_length % self.hop_length != 0:
                 raise ValueError("Hop length should be a divider of segment length")
@@ -129,7 +129,7 @@ class Mel2SampOnehot(torch.utils.data.Dataset):
             mel = self.get_mel(audio)
 
         mel = mel.transpose(1, 0)
-        audio = utils.mu_law_encode(audio / utils.MAX_WAV_VALUE, self.mu_quantization)
+        audio = utils.mu_law_encode(audio, self.mu_quantization)
         return (mel, audio)
     
     def __len__(self):
