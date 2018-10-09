@@ -53,9 +53,9 @@ class Mel2SampOnehot(torch.utils.data.Dataset):
     This is the main class that calculates the spectrogram and returns the
     spectrogram, audio pair.
     """
-    def __init__(self, training_files, segment_length, mu_quantization,
-                 filter_length, hop_length, win_length, sampling_rate, use_tf=False, load_mel=False):
-        audio_files = utils.files_to_list(training_files)
+    def __init__(self, audio_files, segment_length, mu_quantization,
+                 filter_length, hop_length, win_length, sampling_rate, no_chunks, use_tf=False, load_mel=False):
+        audio_files = utils.files_to_list(audio_files)
         self.audio_files = audio_files
         random.seed(1234)
         random.shuffle(self.audio_files)
@@ -73,11 +73,13 @@ class Mel2SampOnehot(torch.utils.data.Dataset):
         self.mel_segment_length = segment_length // self.hop_length
         self.use_tf = use_tf
         self.load_mel = load_mel
+        self.no_chunks = no_chunks
         self.audio_processor = AudioProcessor(window_size=win_length, window_step=hop_length)
 
     def get_mel(self, audio):
         if self.use_tf:
-            audio = audio.numpy()[None, None, :]
+            audio = (audio.numpy()).astype("float32") / utils.MAX_WAV_VALUE
+            audio = audio[None, None, :]
             lengths = np.array([int(audio.shape[-1])], dtype=np.int32)[None, :]
             _, melspec, _ = self.audio_processor.compute_spectrum(audio,
                                                                   lengths, sample_rate=self.sampling_rate)
@@ -98,38 +100,40 @@ class Mel2SampOnehot(torch.utils.data.Dataset):
         if sampling_rate != self.sampling_rate:
             raise ValueError("{} SR doesn't match target {} SR".format(
                 sampling_rate, self.sampling_rate))
-        audio = audio / utils.MAX_WAV_VALUE
-        if mel_filename != "" and self.load_mel:
-            if self.segment_length % self.hop_length != 0:
-                raise ValueError("Hop length should be a divider of segment length")
-            mel = np.load(mel_filename)
-            mel = torch.from_numpy(mel)
-            # Take segment
-            if mel.size(0) >= self.mel_segment_length:
-                max_mel_start = mel.size(0) - self.mel_segment_length
-                mel_start = random.randint(0, max_mel_start)
-                mel = mel[mel_start: mel_start + self.mel_segment_length]
-                if mel.size(0) < self.mel_segment_length:
-                    mel = torch.nn.functional.pad(mel, (0, 0, 0, self.mel_segment_length - mel.size(0)),
-                                                  'constant').data
-                audio_start = mel_start * self.hop_length
-                audio = audio[audio_start: audio_start + self.segment_length]
-                if audio.size(0) < self.segment_length:
-                    audio = torch.nn.functional.pad(audio, (0, self.segment_length - audio.size(0)), 'constant').data
-            else:
-                audio = torch.nn.functional.pad(audio, (0, self.segment_length - audio.size(0)), 'constant').data
-                mel = torch.nn.functional.pad(mel, (0, 0, 0, self.mel_segment_length - mel.size(0)), 'constant').data
-        else:
-            if audio.size(0) >= self.segment_length:
-                max_audio_start = audio.size(0) - self.segment_length
-                audio_start = random.randint(0, max_audio_start)
-                audio = audio[audio_start:audio_start + self.segment_length]
-            else:
-                audio = torch.nn.functional.pad(audio, (0, self.segment_length - audio.size(0)), 'constant').data
+        if self.no_chunks:
             mel = self.get_mel(audio)
+        else:
+            if mel_filename != "" and self.load_mel:
+                if self.segment_length % self.hop_length != 0:
+                    raise ValueError("Hop length should be a divider of segment length")
+                mel = np.load(mel_filename)
+                mel = torch.from_numpy(mel)
+                # Take segment
+                if mel.size(0) >= self.mel_segment_length:
+                    max_mel_start = mel.size(0) - self.mel_segment_length
+                    mel_start = random.randint(0, max_mel_start)
+                    mel = mel[mel_start: mel_start + self.mel_segment_length]
+                    if mel.size(0) < self.mel_segment_length:
+                        mel = torch.nn.functional.pad(mel, (0, 0, 0, self.mel_segment_length - mel.size(0)),
+                                                      'constant').data
+                    audio_start = mel_start * self.hop_length
+                    audio = audio[audio_start: audio_start + self.segment_length]
+                    if audio.size(0) < self.segment_length:
+                        audio = torch.nn.functional.pad(audio, (0, self.segment_length - audio.size(0)), 'constant').data
+                else:
+                    audio = torch.nn.functional.pad(audio, (0, self.segment_length - audio.size(0)), 'constant').data
+                    mel = torch.nn.functional.pad(mel, (0, 0, 0, self.mel_segment_length - mel.size(0)), 'constant').data
+            else:
+                if audio.size(0) >= self.segment_length:
+                    max_audio_start = audio.size(0) - self.segment_length
+                    audio_start = random.randint(0, max_audio_start)
+                    audio = audio[audio_start:audio_start + self.segment_length]
+                else:
+                    audio = torch.nn.functional.pad(audio, (0, self.segment_length - audio.size(0)), 'constant').data
+                mel = self.get_mel(audio)
 
         mel = mel.transpose(1, 0)
-        audio = utils.mu_law_encode(audio, self.mu_quantization)
+        audio = utils.mu_law_encode(audio / utils.MAX_WAV_VALUE, self.mu_quantization)
         return (mel, audio)
     
     def __len__(self):

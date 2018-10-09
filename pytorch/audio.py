@@ -8,8 +8,8 @@ LN_TO_DB = 20 * LN_TO_LOG10
 
 
 class AudioProcessor:
-    def __init__(self, min_level_db=-50.0, window_size=1024, window_step=256, preemphasis_coef=0.97,
-                 lower_edge_hertz=125.0, upper_edge_hertz=7600.0, num_mel_bins=80, ref_level_db=20.0, post_power=1.5,
+    def __init__(self, min_level_db=-100.0,  window_size=1024, window_step=256, preemphasis_coef=0.97,
+                 lower_edge_hertz=125.0, upper_edge_hertz=7600.0, num_mel_bins=80, ref_level_db=-20.0, post_power=1.0,
                  dbfs_normalization=True, apply_preemphasis=True, pad_end=True):
         self.window_size = window_size
         self.window_step = window_step
@@ -122,4 +122,3 @@ def griffin_lim(spectrogram, n_iter=5, window_size=1024, window_step=256):
                 phase = stft / tf.cast(1e-8 + tf.abs(stft), tf.complex64)
                 signal = tf.contrib.signal.inverse_stft(stft_magnitude * phase, window_size, window_step)
     return signal
-

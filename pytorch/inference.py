@@ -56,12 +56,12 @@ def main(mel_files, model_filename, output_dir, batch_size, implementation):
 
         for i, (_, file_path) in enumerate(files):
             file_name = os.path.splitext(os.path.basename(file_path))[0]
-            
             audio = utils.mu_law_decode_numpy(audio_data[i,:].cpu().numpy(), 256)
             audio = utils.MAX_WAV_VALUE * audio
             wavdata = audio.astype('int16')
             write("{}/{}.wav".format(output_dir, file_name),
                   22050, wavdata)
+        torch.cuda.empty_cache()
 
 if __name__ == "__main__":
     import argparse

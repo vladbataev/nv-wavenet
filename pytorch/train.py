@@ -30,6 +30,11 @@ import os
 import time
 import torch
 
+import nv_wavenet
+import utils
+
+from tensorboardX import SummaryWriter
+
 #=====START: ADDED FOR DISTRIBUTED======
 from distributed import init_distributed, apply_gradient_allreduce, reduce_tensor
 from torch.utils.data.distributed import DistributedSampler
@@ -81,7 +86,7 @@ def save_checkpoint(model, optimizer, learning_rate, iteration, filepath):
                 'learning_rate': learning_rate}, filepath)
 
 def train(num_gpus, rank, group_name, output_directory, epochs, learning_rate,
-          iters_per_checkpoint, batch_size, seed, checkpoint_path, log_file):
+          iters_per_checkpoint, iters_per_eval, batch_size, seed, checkpoint_path, log_dir):
     torch.manual_seed(seed)
     torch.cuda.manual_seed(seed)
     #=====START: ADDED FOR DISTRIBUTED======
@@ -106,15 +111,19 @@ def train(num_gpus, rank, group_name, output_directory, epochs, learning_rate,
                                                       optimizer)
         iteration += 1  # next iteration is iteration + 1
 
-    trainset = Mel2SampOnehot(**data_config)
+    trainset = Mel2SampOnehot(**train_data_config)
+    validset = Mel2SampOnehot(**valid_data_config)
     # =====START: ADDED FOR DISTRIBUTED======
     train_sampler = DistributedSampler(trainset) if num_gpus > 1 else None
+    valid_sampler = DistributedSampler(validset) if num_gpus > 1 else None
     # =====END:   ADDED FOR DISTRIBUTED======
     train_loader = DataLoader(trainset, num_workers=1, shuffle=False,
                               sampler=train_sampler,
                               batch_size=batch_size,
                               pin_memory=False,
                               drop_last=True)
+    valid_loader = DataLoader(validset, num_workers=1, shuffle=False,
+                              sampler=valid_sampler, batch_size=1, pin_memory=False)
 
     # Get shared output_directory ready
     if rank == 0:
@@ -125,38 +134,56 @@ def train(num_gpus, rank, group_name, output_directory, epochs, learning_rate,
     
     model.train()
     epoch_offset = max(0, int(iteration / len(train_loader)))
+    writer = SummaryWriter(log_dir)
     # ================ MAIN TRAINNIG LOOP! ===================
-    with open(log_file,  "w") as fout:
-        for epoch in range(epoch_offset, epochs):
-            print("Epoch: {}".format(epoch))
-            print("Epoch: {}".format(epoch), file=fout)
-            for i, batch in enumerate(train_loader):
-                model.zero_grad()
+    for epoch in range(epoch_offset, epochs):
+        print("Epoch: {}".format(epoch))
+        for i, batch in enumerate(train_loader):
+            model.zero_grad()
 
-                x, y = batch
-                x = to_gpu(x).float()
-                y = to_gpu(y)
-                x = (x, y)  # auto-regressive takes outputs as inputs
-                y_pred = model(x)
-                loss = criterion(y_pred, y)
-                if num_gpus > 1:
-                    reduced_loss = reduce_tensor(loss.data, num_gpus)[0]
-                else:
-                    reduced_loss = loss.data[0]
-                loss.backward()
-                optimizer.step()
+            x, y = batch
+            x = to_gpu(x).float()
+            y = to_gpu(y)
+            x = (x, y)  # auto-regressive takes outputs as inputs
+            y_pred = model(x)
+            loss = criterion(y_pred, y)
+            if num_gpus > 1:
+                reduced_loss = reduce_tensor(loss.data, num_gpus)[0]
+            else:
+                reduced_loss = loss.data[0]
+            loss.backward()
+            optimizer.step()
 
-                print("{}:\t{:.9f}".format(iteration, reduced_loss))
-                print("{}:\t{:.9f}".format(iteration, reduced_loss), file=fout)
+            print("{}:\t{:.9f}".format(iteration, reduced_loss))
+            writer.add_scalar('loss', reduced_loss, iteration)
 
-                if (iteration % iters_per_checkpoint == 0):
-                    if rank == 0:
-                        checkpoint_path = "{}/wavenet_{}".format(
-                            output_directory, iteration)
-                        save_checkpoint(model, optimizer, learning_rate, iteration,
-                                        checkpoint_path)
+            if (iteration % iters_per_checkpoint == 0 and iteration):
+                if rank == 0:
+                    checkpoint_path = "{}/wavenet_{}".format(
+                        output_directory, iteration)
+                    save_checkpoint(model, optimizer, learning_rate, iteration,
+                                    checkpoint_path)
+            if (iteration % iters_per_eval == 0 and iteration > 0):
+                if rank == 0:
+                    model_eval = nv_wavenet.NVWaveNet(**(model.export_weights()))
+                    for j, valid_batch in enumerate(valid_loader):
+                        mel, audio = valid_batch
+                        mel = to_gpu(mel).float()
+                        cond_input = model.get_cond_input(mel)
+                        predicted_audio = model_eval.infer(cond_input, nv_wavenet.Impl.AUTO)
+                        predicted_audio = utils.mu_law_decode_numpy(predicted_audio[0, :].cpu().numpy(), 256)
+                        writer.add_audio("valid/predicted_audio_{}".format(j),
+                                         predicted_audio,
+                                         iteration,
+                                         22050)
+                        audio = utils.mu_law_decode_numpy(audio[0, :].cpu().numpy(), 256)
+                        writer.add_audio("valid_true/audio_{}".format(j),
+                                         audio,
+                                         iteration,
+                                         22050)
+                        torch.cuda.empty_cache()
+            iteration += 1
 
-                iteration += 1
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -173,8 +200,13 @@ if __name__ == "__main__":
         data = f.read()
     config = json.loads(data)
     train_config = config["train_config"]
-    global data_config
-    data_config = config["data_config"]
+
+    global train_data_config
+    train_data_config = config["train_data_config"]
+
+    global valid_data_config
+    valid_data_config = config["valid_data_config"]
+
     global dist_config
     dist_config = config["dist_config"]
     global wavenet_config 
