@@ -25,11 +25,15 @@
 # 
 # *****************************************************************************
 import os
-from scipy.io.wavfile import write
 import torch
 import numpy as np
 import nv_wavenet
 import utils
+import json
+
+from tensorboardX import SummaryWriter
+from mel2samp_onehot import Mel2SampOnehot
+
 
 def chunker(seq, size):
     """
@@ -38,18 +42,28 @@ def chunker(seq, size):
     return (seq[pos:pos + size] for pos in range(0, len(seq), size))
 
 
-def main(mel_files, model_filename, output_dir, batch_size, implementation):
-    mel_files = utils.files_to_list(mel_files)
+def main(mel_files, model_filename, output_dir, batch_size, implementation, data_config,
+         preload_mels=False):
     model = torch.load(model_filename)['model']
     wavenet = nv_wavenet.NVWaveNet(**(model.export_weights()))
-    
+    writer = SummaryWriter(output_dir)
+    mel_extractor = Mel2SampOnehot(**data_config)
+    mel_files = utils.files_to_list(mel_files)
+
     for files in chunker(mel_files, batch_size):
         mels = []
-        for _, file_path in files:
-            print(file_path)
-            mel = np.load(file_path).T
-            mel = torch.from_numpy(mel)
-            mel = utils.to_gpu(mel)
+        for audio_filepath, mel_filepath in files:
+            print(audio_filepath, mel_filepath)
+            if preload_mels:
+                mel = np.load(mel_filepath).T
+                mel = torch.from_numpy(mel)
+                mel = utils.to_gpu(mel)
+            else:
+                audio, _ = utils.load_wav_to_torch(audio_filepath)
+                file_name = os.path.splitext(os.path.basename(audio_filepath))[0]
+                writer.add_audio("eval_true/{}".format(file_name), audio / utils.MAX_WAV_VALUE, 0, 22050)
+                mel = mel_extractor.get_mel(audio)
+                mel = mel.t().cuda()
             mels.append(torch.unsqueeze(mel, 0))
         cond_input = model.get_cond_input(torch.cat(mels, 0))
         audio_data = wavenet.infer(cond_input, implementation)
@@ -57,11 +71,9 @@ def main(mel_files, model_filename, output_dir, batch_size, implementation):
         for i, (_, file_path) in enumerate(files):
             file_name = os.path.splitext(os.path.basename(file_path))[0]
             audio = utils.mu_law_decode_numpy(audio_data[i,:].cpu().numpy(), 256)
-            audio = utils.MAX_WAV_VALUE * audio
-            wavdata = audio.astype('int16')
-            write("{}/{}.wav".format(output_dir, file_name),
-                  22050, wavdata)
+            writer.add_audio("eval_synth/{}".format(file_name), audio, 0, 22050)
         torch.cuda.empty_cache()
+
 
 if __name__ == "__main__":
     import argparse
@@ -71,10 +83,12 @@ if __name__ == "__main__":
     parser.add_argument('-c', "--checkpoint_path", required=True)
     parser.add_argument('-o', "--output_dir", required=True)
     parser.add_argument('-b', "--batch_size", default=1)
+    parser.add_argument('-d', "--data_config", required=True)
     parser.add_argument('-i', "--implementation", type=str, default="persistent",
                         help="""Which implementation of NV-WaveNet to use.
                         Takes values of single, dual, or persistent""" )
-    
+    parser.add_argument("--preload_mels", action="store_true")
+
     args = parser.parse_args()
     if args.implementation == "auto":
         implementation = nv_wavenet.Impl.AUTO
@@ -86,5 +100,9 @@ if __name__ == "__main__":
         implementation = nv_wavenet.Impl.PERSISTENT
     else:
         raise ValueError("implementation must be one of auto, single, dual, or persistent")
-    
-    main(args.filelist_path, args.checkpoint_path, args.output_dir, args.batch_size, implementation)
+
+    with open(args.data_config) as f:
+        data = f.read()
+        data_config = json.loads(data)
+    main(args.filelist_path, args.checkpoint_path, args.output_dir, args.batch_size,
+         implementation, data_config, args.preload_mels)
