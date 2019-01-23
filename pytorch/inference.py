@@ -42,36 +42,36 @@ def chunker(seq, size):
     return (seq[pos:pos + size] for pos in range(0, len(seq), size))
 
 
-def main(mel_files, model_filename, output_dir, batch_size, implementation, data_config,
+def main(input_files, model_filename, output_dir, batch_size, implementation, data_config,
          preload_mels=False):
     model = torch.load(model_filename)['model']
     wavenet = nv_wavenet.NVWaveNet(**(model.export_weights()))
+    print("Wavenet num layers: {}, max_dilation: {}".format(wavenet.num_layers, wavenet.max_dilation))
     writer = SummaryWriter(output_dir)
     mel_extractor = Mel2SampOnehot(**data_config)
-    mel_files = utils.files_to_list(mel_files)
+    input_files = utils.files_to_list(input_files)
 
-    for files in chunker(mel_files, batch_size):
+    for j, files in enumerate(chunker(input_files, batch_size)):
         mels = []
-        for audio_filepath, mel_filepath in files:
-            print(audio_filepath, mel_filepath)
+        for i, file_path in enumerate(files):
             if preload_mels:
-                mel = np.load(mel_filepath).T
+                mel = np.load(file_path[0]).T
                 mel = torch.from_numpy(mel)
                 mel = utils.to_gpu(mel)
             else:
-                audio, _ = utils.load_wav_to_torch(audio_filepath)
-                file_name = os.path.splitext(os.path.basename(audio_filepath))[0]
-                writer.add_audio("eval_true/{}".format(file_name), audio / utils.MAX_WAV_VALUE, 0, 22050)
+                audio, _ = utils.load_wav_to_torch(file_path)
+                file_name = os.path.splitext(os.path.basename(file_path))[0]
+                writer.add_audio("eval_true/{}/{}".format(i, file_name), audio / utils.MAX_WAV_VALUE, 0, 22050)
                 mel = mel_extractor.get_mel(audio)
                 mel = mel.t().cuda()
             mels.append(torch.unsqueeze(mel, 0))
         cond_input = model.get_cond_input(torch.cat(mels, 0))
         audio_data = wavenet.infer(cond_input, implementation)
 
-        for i, (_, file_path) in enumerate(files):
-            file_name = os.path.splitext(os.path.basename(file_path))[0]
+        for i, file_path in enumerate(files):
+            file_name = os.path.splitext(os.path.basename(file_path[0]))[0]
             audio = utils.mu_law_decode_numpy(audio_data[i,:].cpu().numpy(), 256)
-            writer.add_audio("eval_synth/{}".format(file_name), audio, 0, 22050)
+            writer.add_audio("eval_synth/{}/{}".format(j, file_name), audio, 0, 22050)
         torch.cuda.empty_cache()
 
 

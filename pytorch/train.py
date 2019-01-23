@@ -40,6 +40,7 @@ from distributed import init_distributed, apply_gradient_allreduce, reduce_tenso
 from torch.utils.data.distributed import DistributedSampler
 #=====END:   ADDED FOR DISTRIBUTED======
 
+from torch.optim.lr_scheduler import StepLR
 from torch.utils.data import DataLoader
 from wavenet import WaveNet
 from mel2samp_onehot import Mel2SampOnehot
@@ -64,18 +65,19 @@ class CrossEntropyLoss(torch.nn.Module):
         inputs = inputs.view(-1, self.num_classes)
         return torch.nn.CrossEntropyLoss()(inputs, targets)
 
-def load_checkpoint(checkpoint_path, model, optimizer):
+def load_checkpoint(checkpoint_path, model, optimizer, scheduler):
     assert os.path.isfile(checkpoint_path)
     checkpoint_dict = torch.load(checkpoint_path, map_location='cpu')
     iteration = checkpoint_dict['iteration']
     optimizer.load_state_dict(checkpoint_dict['optimizer'])
+    scheduler.load_state_dict(checkpoint_dict['scheduler'])
     model_for_loading = checkpoint_dict['model']
     model.load_state_dict(model_for_loading.state_dict())
     print("Loaded checkpoint '{}' (iteration {})" .format(
           checkpoint_path, iteration))
-    return model, optimizer, iteration
+    return model, optimizer, scheduler, iteration
 
-def save_checkpoint(model, optimizer, learning_rate, iteration, filepath):
+def save_checkpoint(model, optimizer, scheduler, learning_rate, iteration, filepath):
     print("Saving model and optimizer state at iteration {} to {}".format(
           iteration, filepath))
     model_for_saving = WaveNet(**wavenet_config).cuda()
@@ -83,6 +85,7 @@ def save_checkpoint(model, optimizer, learning_rate, iteration, filepath):
     torch.save({'model': model_for_saving,
                 'iteration': iteration,
                 'optimizer': optimizer.state_dict(),
+                'scheduler': scheduler.state_dict(),
                 'learning_rate': learning_rate}, filepath)
 
 def train(num_gpus, rank, group_name, output_directory, epochs, learning_rate,
@@ -103,12 +106,13 @@ def train(num_gpus, rank, group_name, output_directory, epochs, learning_rate,
     #=====END:   ADDED FOR DISTRIBUTED======
 
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
+    scheduler = StepLR(optimizer, step_size=200000, gamma=0.5)
 
     # Load checkpoint if one exists
     iteration = 0
     if checkpoint_path != "":
-        model, optimizer, iteration = load_checkpoint(checkpoint_path, model,
-                                                      optimizer)
+        model, optimizer, scheduler, iteration = load_checkpoint(checkpoint_path, model,
+                                                      optimizer, scheduler)
         iteration += 1  # next iteration is iteration + 1
 
     trainset = Mel2SampOnehot(**train_data_config)
@@ -120,10 +124,10 @@ def train(num_gpus, rank, group_name, output_directory, epochs, learning_rate,
     train_loader = DataLoader(trainset, num_workers=1, shuffle=False,
                               sampler=train_sampler,
                               batch_size=batch_size,
-                              pin_memory=False,
+                              pin_memory=True,
                               drop_last=True)
     valid_loader = DataLoader(validset, num_workers=1, shuffle=False,
-                              sampler=valid_sampler, batch_size=1, pin_memory=False)
+                              sampler=valid_sampler, batch_size=1, pin_memory=True)
 
     # Get shared output_directory ready
     if rank == 0:
@@ -135,10 +139,13 @@ def train(num_gpus, rank, group_name, output_directory, epochs, learning_rate,
     model.train()
     epoch_offset = max(0, int(iteration / len(train_loader)))
     writer = SummaryWriter(log_dir)
+    print("Checkpoints writing to: {}".format(log_dir))
     # ================ MAIN TRAINNIG LOOP! ===================
     for epoch in range(epoch_offset, epochs):
         print("Epoch: {}".format(epoch))
         for i, batch in enumerate(train_loader):
+            torch.cuda.empty_cache()
+            scheduler.step()
             model.zero_grad()
 
             x, y = batch
@@ -155,15 +162,16 @@ def train(num_gpus, rank, group_name, output_directory, epochs, learning_rate,
             optimizer.step()
 
             print("{}:\t{:.9f}".format(iteration, reduced_loss))
-            writer.add_scalar('loss', reduced_loss, iteration)
-
+            if rank == 0:
+                writer.add_scalar('loss', reduced_loss, iteration)
             if (iteration % iters_per_checkpoint == 0 and iteration):
                 if rank == 0:
                     checkpoint_path = "{}/wavenet_{}".format(
                         output_directory, iteration)
-                    save_checkpoint(model, optimizer, learning_rate, iteration,
+                    save_checkpoint(model, optimizer, scheduler, learning_rate, iteration,
                                     checkpoint_path)
             if (iteration % iters_per_eval == 0 and iteration > 0):
+                torch.cuda.empty_cache()
                 if rank == 0:
                     model_eval = nv_wavenet.NVWaveNet(**(model.export_weights()))
                     for j, valid_batch in enumerate(valid_loader):

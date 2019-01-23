@@ -70,7 +70,7 @@ class Mel2SampOnehot(torch.utils.data.Dataset):
         self.mu_quantization = mu_quantization
         self.sampling_rate = sampling_rate
         self.segment_length = segment_length
-        self.mel_segment_length = segment_length // self.hop_length
+        self.mel_segment_length = (segment_length - win_length) // self.hop_length + 1
         self.use_tf = use_tf
         self.load_mel = load_mel
         self.no_chunks = no_chunks
