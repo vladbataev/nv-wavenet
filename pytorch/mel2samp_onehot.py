@@ -36,6 +36,8 @@ import torch.utils.data
 import sys
 import numpy as np
 import tensorflow as tf
+import lws
+import librosa
 
 from audio import AudioProcessor
 
@@ -54,27 +56,70 @@ class Mel2SampOnehot(torch.utils.data.Dataset):
     spectrogram, audio pair.
     """
     def __init__(self, audio_files, segment_length, mu_quantization,
-                 filter_length, hop_length, win_length, sampling_rate, no_chunks, use_tf=False, load_mel=False):
+                 filter_length, hop_length, win_length, sampling_rate, no_chunks, num_mels=80,
+                 fmin=25, fmax=7600, use_tf=False, use_lws=True, load_mel=False):
         audio_files = utils.files_to_list(audio_files)
         self.audio_files = audio_files
         random.seed(1234)
         random.shuffle(self.audio_files)
         
         self.stft = TacotronSTFT(filter_length=filter_length,
-                                    hop_length=hop_length,
-                                    win_length=win_length,
-                                    sampling_rate=sampling_rate)
+                                 hop_length=hop_length,
+                                 win_length=win_length,
+                                 sampling_rate=sampling_rate)
 
         self.win_length = win_length
         self.hop_length = hop_length
         self.mu_quantization = mu_quantization
         self.sampling_rate = sampling_rate
         self.segment_length = segment_length
-        self.mel_segment_length = (segment_length - win_length) // self.hop_length + 1
+        self.mel_segment_length = int(np.ceil((segment_length - win_length) / self.hop_length))
+        self.num_mels = num_mels
         self.use_tf = use_tf
         self.load_mel = load_mel
         self.no_chunks = no_chunks
+        self.use_lws = use_lws
+        self._fmin = fmin
+        self._fmax = fmax
+        if self.use_lws:
+            self._lws_processor = self._lws_processor()
+            self._mel_basis = librosa.filters.mel(self.sampling_rate, self.win_length, n_mels=self.num_mels,
+                                                  fmin=fmin, fmax=fmax)
         self.audio_processor = AudioProcessor(window_size=win_length, window_step=hop_length)
+
+    def _lws_processor(self):
+        return lws.lws(self.win_length, self.hop_length, fftsize=self.win_length, mode="speech")
+
+    def _amp_to_db(self, x, min_level_db=-100):
+        min_level = np.exp(min_level_db / 20 * np.log(10))
+        return 20 * np.log10(np.maximum(min_level, x))
+
+    def _stft(self, wav):
+        return self._lws_processor.stft(wav).T
+
+    def _linear_to_mel(self, linear):
+        return np.dot(self._mel_basis, linear)
+
+    def trim_silence(self, wav, trim_top_db=60, trim_fft_size=512, trim_hop_size=128):
+        '''Trim leading and trailing silence
+
+        Useful for M-AILABS dataset if we choose to trim the extra 0.5 silence at beginning and end.
+        '''
+        # Thanks @begeekmyfriend and @lautjy for pointing out the params contradiction. These params are separate and tunable per dataset.
+        return librosa.effects.trim(wav,
+                                    top_db=trim_top_db,
+                                    frame_length=trim_fft_size,
+                                    hop_length=trim_hop_size)[0]
+
+    def melspectrogram(self, wav, ref_level_db=20):
+        D = self._stft(wav)
+        S = self._amp_to_db(self._linear_to_mel(np.abs(D))) - ref_level_db
+        return S
+
+    def _normalize(self, S, max_abs_value=4, min_level_db=-100):
+        return np.clip((2 * max_abs_value) * (
+                        (S - min_level_db) / (-min_level_db)) - max_abs_value,
+                           -max_abs_value, max_abs_value)
 
     def get_mel(self, audio):
         if self.use_tf:
@@ -84,6 +129,14 @@ class Mel2SampOnehot(torch.utils.data.Dataset):
             _, melspec, _ = self.audio_processor.compute_spectrum(audio,
                                                                   lengths, sample_rate=self.sampling_rate)
             return torch.FloatTensor(melspec[0].numpy())
+        elif self.use_lws:
+            audio = (audio.numpy()).astype("float32") / utils.MAX_WAV_VALUE
+            audio = audio / np.abs(audio).max() * 0.999
+            mel = self.melspectrogram(audio)
+            mel = self._normalize(mel)
+            # as lws by default pad from left and right (window_size - hop_size) // hop_size
+            mel = mel[:, (self.win_length - self.hop_length) // self.hop_length:]
+            return mel.T
         else:
             audio_norm = audio / utils.MAX_WAV_VALUE
             audio_norm = audio_norm.unsqueeze(0)
@@ -96,7 +149,10 @@ class Mel2SampOnehot(torch.utils.data.Dataset):
         # Read audio
         audio_filename, mel_filename = self.audio_files[index]
 
-        audio, sampling_rate = utils.load_wav_to_torch(audio_filename)
+        audio, sampling_rate = utils.load_wav(audio_filename)
+        audio = self.trim_silence(audio)
+        audio = torch.FloatTensor(audio)
+
         if sampling_rate != self.sampling_rate:
             raise ValueError("{} SR doesn't match target {} SR".format(
                 sampling_rate, self.sampling_rate))
@@ -113,16 +169,15 @@ class Mel2SampOnehot(torch.utils.data.Dataset):
                     max_mel_start = mel.size(0) - self.mel_segment_length
                     mel_start = random.randint(0, max_mel_start)
                     mel = mel[mel_start: mel_start + self.mel_segment_length]
-                    if mel.size(0) < self.mel_segment_length:
-                        mel = torch.nn.functional.pad(mel, (0, 0, 0, self.mel_segment_length - mel.size(0)),
-                                                      'constant').data
+                    assert mel.size(0) == self.mel_segment_length
                     audio_start = mel_start * self.hop_length
                     audio = audio[audio_start: audio_start + self.segment_length]
-                    if audio.size(0) < self.segment_length:
-                        audio = torch.nn.functional.pad(audio, (0, self.segment_length - audio.size(0)), 'constant').data
+                    assert audio.size(0) == self.segment_length
                 else:
-                    audio = torch.nn.functional.pad(audio, (0, self.segment_length - audio.size(0)), 'constant').data
-                    mel = torch.nn.functional.pad(mel, (0, 0, 0, self.mel_segment_length - mel.size(0)), 'constant').data
+                    audio = torch.nn.functional.pad(audio, (0, self.segment_length - audio.size(0)),
+                                                    'constant').data
+                    mel = torch.nn.functional.pad(mel, (0, 0, 0, self.mel_segment_length - mel.size(0)),
+                                                  'constant').data
             else:
                 if audio.size(0) >= self.segment_length:
                     max_audio_start = audio.size(0) - self.segment_length

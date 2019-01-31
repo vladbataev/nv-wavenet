@@ -30,6 +30,7 @@ import numpy as np
 import nv_wavenet
 import utils
 import json
+import librosa
 
 from tensorboardX import SummaryWriter
 from mel2samp_onehot import Mel2SampOnehot
@@ -71,7 +72,10 @@ def main(input_files, model_filename, output_dir, batch_size, implementation, da
         for i, file_path in enumerate(files):
             file_name = os.path.splitext(os.path.basename(file_path[0]))[0]
             audio = utils.mu_law_decode_numpy(audio_data[i,:].cpu().numpy(), 256)
-            writer.add_audio("eval_synth/{}/{}".format(j, file_name), audio, 0, 22050)
+            output_filepath = "eval_synth-{}-{}.wav".format(j, file_name)
+            output_filepath = os.path.join(output_dir, output_filepath)
+            writer.add_audio(output_filepath, audio, 0, 22050)
+            librosa.output.write_wav(output_filepath, audio, 22050)
         torch.cuda.empty_cache()
 
 

@@ -30,12 +30,12 @@ import numpy as np
 from scipy.io.wavfile import read
 MAX_WAV_VALUE = 32768.0
 
-def load_wav_to_torch(full_path):
+def load_wav(full_path):
     """
     Loads wavdata into torch array
     """
     sampling_rate, data = read(full_path)
-    return torch.FloatTensor(data.astype(np.float32)), sampling_rate
+    return data.astype(np.float32), sampling_rate
 
 def files_to_list(filename, delimiter=","):
     """
