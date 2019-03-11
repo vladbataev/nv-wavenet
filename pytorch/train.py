@@ -115,8 +115,8 @@ def train(num_gpus, rank, group_name, output_directory, epochs, learning_rate,
                                                       optimizer, scheduler)
         iteration += 1  # next iteration is iteration + 1
 
-    trainset = Mel2SampOnehot(**train_data_config)
-    validset = Mel2SampOnehot(**valid_data_config)
+    trainset = Mel2SampOnehot(audio_config=audio_config, verbose=True, **train_data_config)
+    validset = Mel2SampOnehot(audio_config=audio_config, verbose=False, **valid_data_config)
     # =====START: ADDED FOR DISTRIBUTED======
     train_sampler = DistributedSampler(trainset) if num_gpus > 1 else None
     valid_sampler = DistributedSampler(validset) if num_gpus > 1 else None
@@ -144,7 +144,8 @@ def train(num_gpus, rank, group_name, output_directory, epochs, learning_rate,
     for epoch in range(epoch_offset, epochs):
         print("Epoch: {}".format(epoch))
         for i, batch in enumerate(train_loader):
-            torch.cuda.empty_cache()
+            if low_memory:
+                torch.cuda.empty_cache()
             scheduler.step()
             model.zero_grad()
 
@@ -171,7 +172,8 @@ def train(num_gpus, rank, group_name, output_directory, epochs, learning_rate,
                     save_checkpoint(model, optimizer, scheduler, learning_rate, iteration,
                                     checkpoint_path)
             if (iteration % iters_per_eval == 0 and iteration > 0):
-                torch.cuda.empty_cache()
+                if low_memory:
+                    torch.cuda.empty_cache()
                 if rank == 0:
                     model_eval = nv_wavenet.NVWaveNet(**(model.export_weights()))
                     for j, valid_batch in enumerate(valid_loader):
@@ -189,7 +191,8 @@ def train(num_gpus, rank, group_name, output_directory, epochs, learning_rate,
                                          audio,
                                          iteration,
                                          22050)
-                        torch.cuda.empty_cache()
+                        if low_memory:
+                            torch.cuda.empty_cache()
             iteration += 1
 
 
@@ -208,6 +211,12 @@ if __name__ == "__main__":
         data = f.read()
     config = json.loads(data)
     train_config = config["train_config"]
+
+    global low_memory
+    low_memory = config["low_memory"]
+
+    global audio_config
+    audio_config = config["audio_config"]
 
     global train_data_config
     train_data_config = config["train_data_config"]

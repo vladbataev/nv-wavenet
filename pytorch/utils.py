@@ -41,10 +41,14 @@ def files_to_list(filename, delimiter=","):
     """
     Takes a text file of filenames and makes a list of filenames
     """
+    files = []
     with open(filename, encoding='utf-8') as f:
-        files = f.readlines()
-
-    files = [f.rstrip().split(delimiter) for f in files]
+        for line in f:
+            tmp = line.strip().split(delimiter)
+            if len(tmp) == 2:
+                files.append(tmp)
+            else:
+                files.append([tmp[0], ""])
     return files
 
 def load_filepaths_and_text(filename, split="|"):

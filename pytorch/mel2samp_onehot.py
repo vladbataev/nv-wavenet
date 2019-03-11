@@ -27,213 +27,111 @@
 """
 Generating pairs of mel-spectrograms and original audio
 """
-import argparse
-import json
-import os
 import random
 import torch
 import torch.utils.data
-import sys
 import numpy as np
 import tensorflow as tf
-import lws
-import librosa
 
-from audio import AudioProcessor
+from pprint import pprint
+
+from audio_tf import AudioProcessor
+#from audio_lws import LwsAudioProcessor
 
 config = tf.ConfigProto(device_count={'GPU': 0})
 tf.enable_eager_execution(config=config)
 
 import utils
 
-# We're using the audio processing from TacoTron2 to make sure it matches
-sys.path.insert(0, 'tacotron2')
-from tacotron2.layers import TacotronSTFT
 
 class Mel2SampOnehot(torch.utils.data.Dataset):
     """
     This is the main class that calculates the spectrogram and returns the
     spectrogram, audio pair.
     """
-    def __init__(self, audio_files, segment_length, mu_quantization,
-                 filter_length, hop_length, win_length, sampling_rate, no_chunks, num_mels=80,
-                 fmin=25, fmax=7600, use_tf=False, use_lws=True, load_mel=False):
+    def __init__(self, audio_files, mu_quantization, no_chunks, audio_config, segment_length,
+                 use_tf=False, use_lws=True, load_mel=False, verbose=False):
+
         audio_files = utils.files_to_list(audio_files)
         self.audio_files = audio_files
         random.seed(1234)
         random.shuffle(self.audio_files)
-        
-        self.stft = TacotronSTFT(filter_length=filter_length,
-                                 hop_length=hop_length,
-                                 win_length=win_length,
-                                 sampling_rate=sampling_rate)
 
-        self.win_length = win_length
-        self.hop_length = hop_length
+        if use_tf:
+            audio_processor_cls = AudioProcessor
+        elif use_lws:
+            audio_processor_cls = LwsAudioProcessor
+        else:
+            raise ValueError("Mel spectrum can be calculated only with tf or lws!")
+
+        self.audio_processor = audio_processor_cls(audio_config)
         self.mu_quantization = mu_quantization
-        self.sampling_rate = sampling_rate
         self.segment_length = segment_length
-        self.mel_segment_length = int(np.ceil((segment_length - win_length) / self.hop_length))
-        self.num_mels = num_mels
+
+        audio_params = AudioProcessor._load_params(audio_config)
+        if verbose:
+            print("Audio params:")
+            pprint(audio_params)
+        self.window_length = audio_params["window_size"]
+        self.window_step = audio_params["window_step"]
+        self.sample_rate = audio_params["sample_rate"]
+        self.mel_segment_length = int(np.ceil(
+            (segment_length - self.window_length) / self.window_step)
+        )
+        self.num_mels = audio_params["num_mel_bins"]
         self.use_tf = use_tf
         self.load_mel = load_mel
         self.no_chunks = no_chunks
         self.use_lws = use_lws
-        self._fmin = fmin
-        self._fmax = fmax
-        if self.use_lws:
-            self._lws_processor = self._lws_processor()
-            self._mel_basis = librosa.filters.mel(self.sampling_rate, self.win_length, n_mels=self.num_mels,
-                                                  fmin=fmin, fmax=fmax)
-        self.audio_processor = AudioProcessor(window_size=win_length, window_step=hop_length)
-
-    def _lws_processor(self):
-        return lws.lws(self.win_length, self.hop_length, fftsize=self.win_length, mode="speech")
-
-    def _amp_to_db(self, x, min_level_db=-100):
-        min_level = np.exp(min_level_db / 20 * np.log(10))
-        return 20 * np.log10(np.maximum(min_level, x))
-
-    def _stft(self, wav):
-        return self._lws_processor.stft(wav).T
-
-    def _linear_to_mel(self, linear):
-        return np.dot(self._mel_basis, linear)
-
-    def trim_silence(self, wav, trim_top_db=60, trim_fft_size=512, trim_hop_size=128):
-        '''Trim leading and trailing silence
-
-        Useful for M-AILABS dataset if we choose to trim the extra 0.5 silence at beginning and end.
-        '''
-        # Thanks @begeekmyfriend and @lautjy for pointing out the params contradiction. These params are separate and tunable per dataset.
-        return librosa.effects.trim(wav,
-                                    top_db=trim_top_db,
-                                    frame_length=trim_fft_size,
-                                    hop_length=trim_hop_size)[0]
-
-    def melspectrogram(self, wav, ref_level_db=20):
-        D = self._stft(wav)
-        S = self._amp_to_db(self._linear_to_mel(np.abs(D))) - ref_level_db
-        return S
-
-    def _normalize(self, S, max_abs_value=4, min_level_db=-100):
-        return np.clip((2 * max_abs_value) * (
-                        (S - min_level_db) / (-min_level_db)) - max_abs_value,
-                           -max_abs_value, max_abs_value)
 
     def get_mel(self, audio):
+        mel = self.audio_processor.compute_spectrum(audio)
         if self.use_tf:
-            audio = (audio.numpy()).astype("float32") / utils.MAX_WAV_VALUE
-            audio = audio[None, None, :]
-            lengths = np.array([int(audio.shape[-1])], dtype=np.int32)[None, :]
-            _, melspec, _ = self.audio_processor.compute_spectrum(audio,
-                                                                  lengths, sample_rate=self.sampling_rate)
-            return torch.FloatTensor(melspec[0].numpy())
-        elif self.use_lws:
-            audio = (audio.numpy()).astype("float32") / utils.MAX_WAV_VALUE
-            audio = audio / np.abs(audio).max() * 0.999
-            mel = self.melspectrogram(audio)
-            mel = self._normalize(mel)
-            # as lws by default pad from left and right (window_size - hop_size) // hop_size
-            mel = mel[:, (self.win_length - self.hop_length) // self.hop_length:]
-            return mel.T
-        else:
-            audio_norm = audio / utils.MAX_WAV_VALUE
-            audio_norm = audio_norm.unsqueeze(0)
-            audio_norm = torch.autograd.Variable(audio_norm, requires_grad=False)
-            melspec = self.stft.mel_spectrogram(audio_norm)
-            melspec = torch.squeeze(melspec, 0)
-            return melspec
+            mel = mel.numpy()
+        return mel
 
     def __getitem__(self, index):
         # Read audio
         audio_filename, mel_filename = self.audio_files[index]
 
-        audio, sampling_rate = utils.load_wav(audio_filename)
-        audio = self.trim_silence(audio)
-        audio = torch.FloatTensor(audio)
+        audio, sample_rate = utils.load_wav(audio_filename)
+        audio /= utils.MAX_WAV_VALUE
 
-        if sampling_rate != self.sampling_rate:
+        if sample_rate != self.sample_rate:
             raise ValueError("{} SR doesn't match target {} SR".format(
-                sampling_rate, self.sampling_rate))
+                sample_rate, self.sample_rate))
         if self.no_chunks:
             mel = self.get_mel(audio)
         else:
             if mel_filename != "" and self.load_mel:
-                if self.segment_length % self.hop_length != 0:
+                if self.segment_length % self.window_step != 0:
                     raise ValueError("Hop length should be a divider of segment length")
                 mel = np.load(mel_filename)
-                mel = torch.from_numpy(mel)
                 # Take segment
-                if mel.size(0) >= self.mel_segment_length:
-                    max_mel_start = mel.size(0) - self.mel_segment_length
+                if mel.shape[0] >= self.mel_segment_length:
+                    max_mel_start = mel.shape[0] - self.mel_segment_length
                     mel_start = random.randint(0, max_mel_start)
                     mel = mel[mel_start: mel_start + self.mel_segment_length]
-                    assert mel.size(0) == self.mel_segment_length
-                    audio_start = mel_start * self.hop_length
+                    assert mel.shape[0] == self.mel_segment_length
+                    audio_start = mel_start * self.window_step
                     audio = audio[audio_start: audio_start + self.segment_length]
-                    assert audio.size(0) == self.segment_length
+                    assert audio.shape[0] == self.segment_length
                 else:
-                    audio = torch.nn.functional.pad(audio, (0, self.segment_length - audio.size(0)),
-                                                    'constant').data
-                    mel = torch.nn.functional.pad(mel, (0, 0, 0, self.mel_segment_length - mel.size(0)),
-                                                  'constant').data
+                    audio = np.pad(audio, (0, self.segment_length - audio.shape[0]), 'constant')
+                    mel = np.pad(mel, (0, 0, 0, self.mel_segment_length - mel.shape[0]), 'constant')
             else:
-                if audio.size(0) >= self.segment_length:
-                    max_audio_start = audio.size(0) - self.segment_length
+                if audio.shape[0] >= self.segment_length:
+                    max_audio_start = audio.shape[0] - self.segment_length
                     audio_start = random.randint(0, max_audio_start)
                     audio = audio[audio_start:audio_start + self.segment_length]
                 else:
-                    audio = torch.nn.functional.pad(audio, (0, self.segment_length - audio.size(0)), 'constant').data
+                    audio = np.pad(audio, (0, self.segment_length - audio.shape[0]), 'constant')
                 mel = self.get_mel(audio)
 
-        mel = mel.transpose(1, 0)
-        audio = utils.mu_law_encode(audio / utils.MAX_WAV_VALUE, self.mu_quantization)
-        return (mel, audio)
+        mel = torch.FloatTensor(mel)
+        audio = torch.FloatTensor(audio)
+        audio = utils.mu_law_encode(audio, self.mu_quantization)
+        return mel, audio
     
     def __len__(self):
         return len(self.audio_files)
-
-
-if __name__ == "__main__":
-    """
-    Turns audio files into mel-spectrogram representations for inference
-
-    Uses the data portion of the config for audio processing parameters, 
-    but ignores training files and segment lengths.
-    """
-    parser = argparse.ArgumentParser()
-    parser.add_argument('-a', "--audio_list", required=True, type=str,
-                        help='File containing list of wavefiles')
-    parser.add_argument('-o', "--output_dir", required=True, type=str,
-                        help='Directory to put Mel-Spectrogram Tensors')
-    parser.add_argument('-c', '--config', type=str,
-                        help='JSON file for configuration')
-    
-    args = parser.parse_args()
-
-    filepaths = utils.files_to_list(args.audio_list)
-    
-    # Make directory if it doesn't exist
-    if not os.path.isdir(args.output_dir):
-        os.makedirs(args.output_dir)
-        os.chmod(args.output_dir, 0o775)
-    
-    # Parse config.  Only using data processing
-    with open(args.config) as f:
-        data = f.read()
-    config = json.loads(data)
-    data_config = config["data_config"]
-    mel_factory = Mel2SampOnehot(**data_config)  
-    
-    for audio_filepath, mel_filepath in filepaths:
-        if mel_filepath != "":
-            melspectrogram = torch.from_numpy((np.load(mel_filepath)).T)
-        else:
-            audio, sampling_rate = utils.load_wav_to_torch(audio_filepath)
-            assert (sampling_rate == mel_factory.sampling_rate)
-            melspectrogram = mel_factory.get_mel(audio)
-        filename = os.path.basename(audio_filepath)
-        new_filepath = args.output_dir + '/' + filename + '.pt'
-        print(new_filepath)
-        torch.save(melspectrogram, new_filepath)
