@@ -36,7 +36,7 @@ import tensorflow as tf
 from pprint import pprint
 
 from audio_tf import AudioProcessor
-#from audio_lws import LwsAudioProcessor
+from audio_lws import LwsAudioProcessor
 
 config = tf.ConfigProto(device_count={'GPU': 0})
 tf.enable_eager_execution(config=config)
@@ -57,14 +57,15 @@ class Mel2SampOnehot(torch.utils.data.Dataset):
         random.seed(1234)
         random.shuffle(self.audio_files)
 
-        if use_tf:
-            audio_processor_cls = AudioProcessor
-        elif use_lws:
-            audio_processor_cls = LwsAudioProcessor
-        else:
-            raise ValueError("Mel spectrum can be calculated only with tf or lws!")
+        if not load_mel:
+            if use_tf:
+                audio_processor_cls = AudioProcessor
+            elif use_lws:
+                audio_processor_cls = LwsAudioProcessor
+            else:
+                raise ValueError("Mel spectrum can be calculated only with tf or lws!")
+            self.audio_processor = audio_processor_cls(audio_config)
 
-        self.audio_processor = audio_processor_cls(audio_config)
         self.mu_quantization = mu_quantization
         self.segment_length = segment_length
 

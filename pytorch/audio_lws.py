@@ -47,7 +47,7 @@ class LwsAudioProcessor:
                             self._params["min_level_db"]) - self._params["ref_level_db"]
         mel = self._normalize(S, self._params["max_abs_value"], self._params["min_level_db"])
         # as lws by default pad from left and right (window_size - hop_size) // hop_size
-        mel = mel[:, (self._params["window_length"] - self._params["hop_length"]) // self._params["hop_length"]:]
+        mel = mel[:, (self._params["window_size"] - self._params["window_step"]) // self._params["window_step"]:]
         return mel
 
     def _normalize(self, S, max_abs_value, min_level_db):
