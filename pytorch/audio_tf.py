@@ -67,7 +67,7 @@ class AudioProcessor:
         spectrogram_db = self.amp_to_db(spectrogram)
         if self.dbfs_normalization:
             spectrogram_db = self.dbfs_normalize(spectrogram_db)
-        spectrogram_db += self.ref_level_db
+        spectrogram_db -= self.ref_level_db
         return self.normalize_and_clip_db(spectrogram_db)
 
     def _mel_basis(self):

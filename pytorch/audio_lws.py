@@ -41,7 +41,8 @@ class LwsAudioProcessor:
     def _linear_to_mel(self, linear):
         return np.dot(self._mel_basis, linear)
 
-    def melspectrogram(self, wav):
+    def compute_spectrum(self, wav):
+        wav = wav / np.abs(wav).max() * 0.999
         D = self._stft(wav)
         S = self._amp_to_db(self._linear_to_mel(np.abs(D)),
                             self._params["min_level_db"]) - self._params["ref_level_db"]
