@@ -26,6 +26,7 @@
 # *****************************************************************************
 import os
 import torch
+import torch.nn.functional as F
 import numpy as np
 from scipy.io.wavfile import read
 MAX_WAV_VALUE = 32768.0
@@ -92,3 +93,19 @@ def mu_law_encode(x, mu_quantization=256):
     x_mu = torch.sign(x) * torch.log1p(mu * torch.abs(x)) / scaling
     encoding = ((x_mu + 1) / 2 * mu + 0.5).long()
     return encoding
+
+def collate_fn(batch, mel_min_value=-4.0):
+    max_mel_length = batch[0][0].size()[1]
+    max_audio_length = batch[0][1].size()[0]
+    for i in range(1, len(batch)):
+        max_mel_length = max(max_mel_length, batch[i][0].size()[1])
+        max_audio_length = max(max_audio_length, batch[i][1].size()[0])
+    padded_mels = []
+    padded_audios = []
+    for pair in batch:
+        mel, audio = pair
+        padded_mel = F.pad(mel, (0, max_mel_length - mel.size(1)), value=mel_min_value)
+        padded_audio = F.pad(audio, (0, max_audio_length - audio.size(0)))
+        padded_mels.append(padded_mel)
+        padded_audios.append(padded_audio)
+    return (torch.stack(padded_mels, 0), torch.stack(padded_audios, 0))

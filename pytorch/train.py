@@ -121,7 +121,13 @@ def train(num_gpus, rank, group_name, output_directory, epochs, learning_rate,
     train_sampler = DistributedSampler(trainset) if num_gpus > 1 else None
     valid_sampler = DistributedSampler(validset) if num_gpus > 1 else None
     # =====END:   ADDED FOR DISTRIBUTED======
+    print(train_data_config)
+    if train_data_config["no_chunks"]:
+        collate_fn = utils.collate_fn
+    else:
+        collate_fn = torch.utils.data.dataloader.default_collate
     train_loader = DataLoader(trainset, num_workers=1, shuffle=False,
+                              collate_fn=collate_fn,
                               sampler=train_sampler,
                               batch_size=batch_size,
                               pin_memory=True,
