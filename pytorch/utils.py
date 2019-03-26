@@ -102,10 +102,12 @@ def collate_fn(batch, mel_min_value=-4.0):
         max_audio_length = max(max_audio_length, batch[i][1].size()[0])
     padded_mels = []
     padded_audios = []
+    seq_lens = []
     for pair in batch:
         mel, audio = pair
         padded_mel = F.pad(mel, (0, max_mel_length - mel.size(1)), value=mel_min_value)
         padded_audio = F.pad(audio, (0, max_audio_length - audio.size(0)))
         padded_mels.append(padded_mel)
         padded_audios.append(padded_audio)
-    return (torch.stack(padded_mels, 0), torch.stack(padded_audios, 0))
+        seq_lens.append(audio.size(0))
+    return (torch.stack(padded_mels, 0), torch.stack(padded_audios, 0), torch.LongTensor(seq_lens))

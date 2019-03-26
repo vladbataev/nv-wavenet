@@ -30,6 +30,7 @@ import os
 import time
 import torch
 
+from torch import nn
 import nv_wavenet
 import utils
 
@@ -65,6 +66,38 @@ class CrossEntropyLoss(torch.nn.Module):
         inputs = inputs.view(-1, self.num_classes)
         return torch.nn.CrossEntropyLoss()(inputs, targets)
 
+
+def sequence_mask(sequence_length, max_len=None):
+    if max_len is None:
+        max_len = sequence_length.data.max()
+    batch_size = sequence_length.size(0)
+    seq_range = torch.arange(0, max_len).long()
+    seq_range_expand = seq_range.unsqueeze(0).expand(batch_size, max_len)
+    if sequence_length.is_cuda:
+        seq_range_expand = seq_range_expand.cuda()
+    seq_length_expand = sequence_length.unsqueeze(1) \
+        .expand_as(seq_range_expand)
+    return (seq_range_expand < seq_length_expand).float()
+
+
+class MaskedCrossEntropyLoss(nn.Module):
+    def __init__(self):
+        super(MaskedCrossEntropyLoss, self).__init__()
+        self.criterion = nn.CrossEntropyLoss(reduce=False)
+        self.num_classes = wavenet_config["n_out_channels"]
+
+    def forward(self, input, target, lengths):
+        maxlen = torch.max(lengths)
+        mask = sequence_mask(lengths, maxlen)
+        mask = mask[:, None, :]
+        B = mask.size(0)
+        # (B, T, D)
+        mask_ = mask.expand(B, self.num_classes, maxlen)
+
+        losses = self.criterion(input, target)
+        return ((losses * mask_).sum()) / mask_.sum()
+
+
 def load_checkpoint(checkpoint_path, model, optimizer, scheduler):
     assert os.path.isfile(checkpoint_path)
     checkpoint_dict = torch.load(checkpoint_path, map_location='cpu')
@@ -96,8 +129,11 @@ def train(num_gpus, rank, group_name, output_directory, epochs, learning_rate,
     if num_gpus > 1:
         init_distributed(rank, num_gpus, group_name, **dist_config)
     #=====END:   ADDED FOR DISTRIBUTED======
-    
-    criterion = CrossEntropyLoss()
+
+    if train_data_config["no_chunks"]:
+        criterion = MaskedCrossEntropyLoss()
+    else:
+        criterion = CrossEntropyLoss()
     model = WaveNet(**wavenet_config).cuda()
 
     #=====START: ADDED FOR DISTRIBUTED======
@@ -155,12 +191,19 @@ def train(num_gpus, rank, group_name, output_directory, epochs, learning_rate,
             scheduler.step()
             model.zero_grad()
 
-            x, y = batch
+            if train_data_config["no_chunks"]:
+                x, y, seq_lens = batch
+                seq_lens = to_gpu(seq_lens)
+            else:
+                x, y = batch
             x = to_gpu(x).float()
             y = to_gpu(y)
             x = (x, y)  # auto-regressive takes outputs as inputs
             y_pred = model(x)
-            loss = criterion(y_pred, y)
+            if train_data_config["no_chunks"]:
+                loss = criterion(y_pred, y, seq_lens)
+            else:
+                loss = criterion(y_pred, y)
             if num_gpus > 1:
                 reduced_loss = reduce_tensor(loss.data, num_gpus)[0]
             else:
@@ -183,7 +226,10 @@ def train(num_gpus, rank, group_name, output_directory, epochs, learning_rate,
                 if rank == 0:
                     model_eval = nv_wavenet.NVWaveNet(**(model.export_weights()))
                     for j, valid_batch in enumerate(valid_loader):
-                        mel, audio = valid_batch
+                        if train_data_config["no_chunks"]:
+                            mel, audio, _ = valid_batch
+                        else:
+                            mel, audio = valid_batch
                         mel = to_gpu(mel).float()
                         cond_input = model.get_cond_input(mel)
                         predicted_audio = model_eval.infer(cond_input, nv_wavenet.Impl.AUTO)
