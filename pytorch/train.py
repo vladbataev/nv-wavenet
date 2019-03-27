@@ -89,13 +89,9 @@ class MaskedCrossEntropyLoss(nn.Module):
     def forward(self, input, target, lengths):
         maxlen = torch.max(lengths)
         mask = sequence_mask(lengths, maxlen)
-        mask = mask[:, None, :]
-        B = mask.size(0)
         # (B, T, D)
-        mask_ = mask.expand(B, self.num_classes, maxlen)
-
         losses = self.criterion(input, target)
-        return ((losses * mask_).sum()) / mask_.sum()
+        return ((losses * mask).sum()) / mask.sum()
 
 
 def load_checkpoint(checkpoint_path, model, optimizer, scheduler):
