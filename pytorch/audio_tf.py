@@ -41,6 +41,18 @@ class AudioProcessor:
         emphasized = tf.pad(signals[:, :, :-1], paddings=paddings) * -self.preemphasis_coef + signals
         return emphasized
 
+    def deemphasis(self, signal):
+        fir_approximation = [1]
+        for i in range(math.ceil(1 / (1 - self.preemphasis_coef))):
+            fir_approximation.append(fir_approximation[-1] * self.preemphasis_coef)
+        filters = tf.constant(fir_approximation[::-1], dtype=tf.float32, shape=(len(fir_approximation), 1, 1))
+        paddings = [
+            [0, 0],
+            [len(fir_approximation), 0],
+        ]
+        signal = tf.pad(signal, paddings)
+        return tf.nn.conv1d(signal[:, :, None], filters, 1, data_format="NWC", padding="VALID")[:, :, 0]
+
     def amp_to_db(self, signal):
         return LN_TO_DB * tf.log(tf.maximum(self.min_level, signal))
 

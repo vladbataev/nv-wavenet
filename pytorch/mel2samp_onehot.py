@@ -73,7 +73,10 @@ class Mel2SampOnehot(torch.utils.data.Dataset):
         if verbose:
             print("Audio params:")
             pprint(audio_params)
+        self.audio_params = audio_params
         self.window_length = audio_params["window_size"]
+        self.preemphasis_coeff = audio_params["preemphasis_coef"]
+        self.apply_preemphasis = audio_params["apply_preemphasis"]
         self.window_step = audio_params["window_step"]
         self.sample_rate = audio_params["sample_rate"]
         self.mel_segment_length = int(np.ceil(
@@ -86,10 +89,18 @@ class Mel2SampOnehot(torch.utils.data.Dataset):
         self.use_lws = use_lws
 
     def get_mel(self, audio):
+        """
+        :param audio:
+        :return: return mel array [F, T] e.g. [80, T]
+        """
         mel = self.audio_processor.compute_spectrum(audio)
         if self.use_tf:
             mel = mel.numpy()
         return mel
+
+    def preemphasis(self, audio):
+        padded_audio = np.pad(audio[:-1], (1, 0), 'constant')
+        return -padded_audio * self.preemphasis_coeff + audio
 
     def __getitem__(self, index):
         # Read audio
@@ -97,17 +108,24 @@ class Mel2SampOnehot(torch.utils.data.Dataset):
 
         audio, sample_rate = utils.load_wav(audio_filename)
         audio /= utils.MAX_WAV_VALUE
+        if self.apply_preemphasis:
+            audio = self.preemphasis(audio)
+        audio = audio / np.abs(audio).max()
 
         if sample_rate != self.sample_rate:
             raise ValueError("{} SR doesn't match target {} SR".format(
                 sample_rate, self.sample_rate))
         if self.no_chunks:
-            mel = self.get_mel(audio)
+            if self.load_mel:
+                mel = np.load(mel_filename).T
+            else:
+                mel = self.get_mel(audio)
         else:
             if mel_filename != "" and self.load_mel:
                 if self.segment_length % self.window_step != 0:
                     raise ValueError("Hop length should be a divider of segment length")
                 mel = np.load(mel_filename)
+                mel = np.clip(mel, -self.audio_params["max_abs_value"], self.audio_params["max_abs_value"])
                 # Take segment
                 if mel.shape[0] >= self.mel_segment_length:
                     max_mel_start = mel.shape[0] - self.mel_segment_length
@@ -129,10 +147,13 @@ class Mel2SampOnehot(torch.utils.data.Dataset):
                     audio = np.pad(audio, (0, self.segment_length - audio.shape[0]), 'constant')
                 mel = self.get_mel(audio)
 
+        mel_length = min(mel.shape[1], len(audio) // self.window_step)
+        mel = mel[:, :mel_length]
+        audio = audio[: mel_length * self.window_step]
         mel = torch.FloatTensor(mel)
         audio = torch.FloatTensor(audio)
         audio = utils.mu_law_encode(audio, self.mu_quantization)
         return mel, audio
-    
+
     def __len__(self):
         return len(self.audio_files)

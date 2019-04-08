@@ -35,6 +35,11 @@ import scipy
 
 from tensorboardX import SummaryWriter
 from mel2samp_onehot import Mel2SampOnehot
+from audio_tf import AudioProcessor
+
+import tensorflow as tf
+
+tf.enable_eager_execution()
 
 
 def chunker(seq, size):
@@ -53,6 +58,7 @@ def main(input_files, model_filename, output_dir, batch_size, implementation, da
     mel_extractor = Mel2SampOnehot(audio_config=audio_config, **data_config)
     input_files = utils.files_to_list(input_files)
 
+    audio_processor = AudioProcessor(audio_config)
     for j, files in enumerate(chunker(input_files, batch_size)):
         mels = []
         for i, file_path in enumerate(files):
@@ -74,13 +80,17 @@ def main(input_files, model_filename, output_dir, batch_size, implementation, da
         for i, file_path in enumerate(files):
             file_name = os.path.splitext(os.path.basename(file_path[0]))[0]
             audio = utils.mu_law_decode_numpy(audio_data[i,:].cpu().numpy(), 256)
+            if mel_extractor.apply_preemphasis:
+                audio = audio.astype("float32")
+                audio = audio_processor.deemphasis(audio[None, :])
+                audio = audio.numpy()[0]
+            audio /= np.abs(audio).max()
             output_filepath = "{}.wav".format(file_name)
             output_filepath = os.path.join(output_dir, output_filepath)
             assert audio.dtype in [np.float64, np.float32]
             assert (np.abs(audio)).max() <= 1
-            assert audio.min() < 0
             writer.add_audio(output_filepath, audio, 0, 22050)
-            audio = (audio * 32768).astype("int16")
+            audio = (audio * 32767).astype("int16")
             scipy.io.wavfile.write(output_filepath, 22050, audio)
         torch.cuda.empty_cache()
 
