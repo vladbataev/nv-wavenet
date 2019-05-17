@@ -60,15 +60,17 @@ class WaveNet(torch.nn.Module):
                  n_cond_channels, upsamp_window, upsamp_stride):
         super(WaveNet, self).__init__()
 
+        self.upsamp_window = upsamp_window
+        self.upsamp_stride = upsamp_stride
         upsample_layers = torch.nn.ModuleList()
         for _ in range(2):
             upsample_layers.append(
                 torch.nn.ConvTranspose2d(
                     in_channels=1,
                     out_channels=1,
-                    kernel_size=(32, 3),
-                    stride=(16, 1),
-                    padding=(0, 1),
+                    kernel_size=(3, 32),
+                    stride=(1, 16),
+                    padding=(1, 0),
                 )
             )
             upsample_layers.append(torch.nn.LeakyReLU(0.4, inplace=True))
@@ -112,18 +114,18 @@ class WaveNet(torch.nn.Module):
             self.skip_layers.append(skip_layer)
 
     def upsample(self, inputs):
-        inputs = inputs[:, None]
+        inputs = torch.unsqueeze(inputs, 1)
         x = inputs
         for l in self.upsample_layers:
             x = l(x)
+        x = torch.squeeze(x, 1)
+        x = x.contiguous()
         return x
 
     def forward(self, forward_input):
         features = forward_input[0]
         forward_input = forward_input[1]
         cond_input = self.upsample(features)
-
-        print(cond_input.size(2), forward_input.size(1))
         assert (cond_input.size(2) >= forward_input.size(1))
         if cond_input.size(2) > forward_input.size(1):
             cond_input = cond_input[:, :, :forward_input.size(1)]
@@ -213,7 +215,7 @@ class WaveNet(torch.nn.Module):
         """
         # TODO(rcosta): trim conv artifacts. mauybe pad spec to kernel multiple
         cond_input = self.upsample(features)
-        time_cutoff = self.upsample.kernel_size[0] - self.upsample.stride[0]
+        time_cutoff = self.upsamp_window - self.upsamp_stride
         cond_input = cond_input[:, :, :-time_cutoff]
         cond_input = self.cond_layers(cond_input).data
         cond_input = cond_input.view(cond_input.size(0), self.n_layers, -1, cond_input.size(2))
