@@ -74,13 +74,13 @@ class Mel2SampOnehot(torch.utils.data.Dataset):
             print("Audio params:")
             pprint(audio_params)
         self.audio_params = audio_params
-        self.window_length = audio_params["window_size"]
+        self.window_size = audio_params["window_size"]
         self.preemphasis_coeff = audio_params["preemphasis_coef"]
         self.apply_preemphasis = audio_params["apply_preemphasis"]
         self.window_step = audio_params["window_step"]
         self.sample_rate = audio_params["sample_rate"]
         self.mel_segment_length = int(np.ceil(
-            (segment_length - self.window_length) / self.window_step)
+            (segment_length - self.window_size) / self.window_step)
         )
         self.num_mels = audio_params["num_mel_bins"]
         self.use_tf = use_tf
@@ -107,10 +107,15 @@ class Mel2SampOnehot(torch.utils.data.Dataset):
         audio_filename, mel_filename = self.audio_files[index]
 
         audio, sample_rate = utils.load_wav(audio_filename)
-        audio /= utils.MAX_WAV_VALUE
+        pad_size = self.window_size - self.window_step
+        left_pad = pad_size
+        right_pad = pad_size + self.window_step - len(audio) % self.window_step
+        audio = np.pad(audio, (left_pad, right_pad), mode="constant", constant_values=0)
+        audio /= np.abs(audio).max()
+
         if self.apply_preemphasis:
             audio = self.preemphasis(audio)
-        audio = audio / np.abs(audio).max()
+            audio /= np.abs(audio).max()
 
         if sample_rate != self.sample_rate:
             raise ValueError("{} SR doesn't match target {} SR".format(
@@ -119,7 +124,8 @@ class Mel2SampOnehot(torch.utils.data.Dataset):
             if self.load_mel:
                 mel = np.load(mel_filename).T
             else:
-                mel = self.get_mel(audio)
+                # as by default lws always pad from left and right
+                mel = self.get_mel(audio[left_pad:-right_pad])
         else:
             if mel_filename != "" and self.load_mel:
                 if self.segment_length % self.window_step != 0:
@@ -149,7 +155,9 @@ class Mel2SampOnehot(torch.utils.data.Dataset):
 
         mel_length = min(mel.shape[1], len(audio) // self.window_step)
         mel = mel[:, :mel_length]
-        audio = audio[: mel_length * self.window_step]
+        audio = audio[:mel_length * self.window_step]
+        # as we want to apply transpose convolution
+        assert len(audio) // self.window_step == mel.shape[1]
         mel = torch.FloatTensor(mel)
         audio = torch.FloatTensor(audio)
         audio = utils.mu_law_encode(audio, self.mu_quantization)

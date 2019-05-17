@@ -42,13 +42,10 @@ class LwsAudioProcessor:
         return np.dot(self._mel_basis, linear)
 
     def compute_spectrum(self, wav):
-        wav = wav / np.abs(wav).max() * 0.999
         D = self._stft(wav)
         S = self._amp_to_db(self._linear_to_mel(np.abs(D)),
                             self._params["min_level_db"]) - self._params["ref_level_db"]
         mel = self._normalize(S, self._params["max_abs_value"], self._params["min_level_db"])
-        # as lws by default pad from left and right (window_size - hop_size) // hop_size
-        mel = mel[:, (self._params["window_size"] - self._params["window_step"]) // self._params["window_step"]:]
         return mel
 
     def _normalize(self, S, max_abs_value, min_level_db):

@@ -33,19 +33,21 @@ import torch
 from torch import nn
 import nv_wavenet
 import utils
+import horovod.torch as hvd
+
 
 from tensorboardX import SummaryWriter
 
-#=====START: ADDED FOR DISTRIBUTED======
-from distributed import init_distributed, apply_gradient_allreduce, reduce_tensor
+# =====START: ADDED FOR DISTRIBUTED======
 from torch.utils.data.distributed import DistributedSampler
-#=====END:   ADDED FOR DISTRIBUTED======
+# =====END:   ADDED FOR DISTRIBUTED======
 
 from torch.optim.lr_scheduler import StepLR
 from torch.utils.data import DataLoader
 from wavenet import WaveNet
 from mel2samp_onehot import Mel2SampOnehot
 from utils import to_gpu
+
 
 class CrossEntropyLoss(torch.nn.Module):
     def __init__(self):
@@ -102,13 +104,14 @@ def load_checkpoint(checkpoint_path, model, optimizer, scheduler):
     scheduler.load_state_dict(checkpoint_dict['scheduler'])
     model_for_loading = checkpoint_dict['model']
     model.load_state_dict(model_for_loading.state_dict())
-    print("Loaded checkpoint '{}' (iteration {})" .format(
-          checkpoint_path, iteration))
+    print("Loaded checkpoint '{}' (iteration {})".format(
+        checkpoint_path, iteration))
     return model, optimizer, scheduler, iteration
+
 
 def save_checkpoint(model, optimizer, scheduler, learning_rate, iteration, filepath):
     print("Saving model and optimizer state at iteration {} to {}".format(
-          iteration, filepath))
+        iteration, filepath))
     model_for_saving = WaveNet(**wavenet_config).cuda()
     model_for_saving.load_state_dict(model.state_dict())
     torch.save({'model': model_for_saving,
@@ -117,14 +120,16 @@ def save_checkpoint(model, optimizer, scheduler, learning_rate, iteration, filep
                 'scheduler': scheduler.state_dict(),
                 'learning_rate': learning_rate}, filepath)
 
-def train(num_gpus, rank, group_name, output_directory, epochs, learning_rate,
+
+def train(output_directory, epochs, learning_rate,
           iters_per_checkpoint, iters_per_eval, batch_size, seed, checkpoint_path, log_dir):
     torch.manual_seed(seed)
     torch.cuda.manual_seed(seed)
-    #=====START: ADDED FOR DISTRIBUTED======
+    # =====START: ADDED FOR DISTRIBUTED======
     if num_gpus > 1:
-        init_distributed(rank, num_gpus, group_name, **dist_config)
-    #=====END:   ADDED FOR DISTRIBUTED======
+        hvd.init()
+    torch.cuda.set_device(hvd.local_rank())
+    # =====END:   ADDED FOR DISTRIBUTED======
 
     if train_data_config["no_chunks"]:
         criterion = MaskedCrossEntropyLoss()
@@ -132,26 +137,11 @@ def train(num_gpus, rank, group_name, output_directory, epochs, learning_rate,
         criterion = CrossEntropyLoss()
     model = WaveNet(**wavenet_config).cuda()
 
-    #=====START: ADDED FOR DISTRIBUTED======
-    if num_gpus > 1:
-        model = apply_gradient_allreduce(model)
-    #=====END:   ADDED FOR DISTRIBUTED======
-
-    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
-    scheduler = StepLR(optimizer, step_size=200000, gamma=0.5)
-
-    # Load checkpoint if one exists
-    iteration = 0
-    if checkpoint_path != "":
-        model, optimizer, scheduler, iteration = load_checkpoint(checkpoint_path, model,
-                                                      optimizer, scheduler)
-        iteration += 1  # next iteration is iteration + 1
-
     trainset = Mel2SampOnehot(audio_config=audio_config, verbose=True, **train_data_config)
     validset = Mel2SampOnehot(audio_config=audio_config, verbose=False, **valid_data_config)
     # =====START: ADDED FOR DISTRIBUTED======
-    train_sampler = DistributedSampler(trainset) if num_gpus > 1 else None
-    valid_sampler = DistributedSampler(validset) if num_gpus > 1 else None
+    train_sampler = DistributedSampler(trainset, num_replicas=hvd.size(), rank=hvd.rank()) if num_gpus > 1 else None
+    valid_sampler = DistributedSampler(validset, num_replicas=hvd.size(), rank=hvd.rank()) if num_gpus > 1 else None
     # =====END:   ADDED FOR DISTRIBUTED======
     print(train_data_config)
     if train_data_config["no_chunks"]:
@@ -166,13 +156,28 @@ def train(num_gpus, rank, group_name, output_directory, epochs, learning_rate,
                               drop_last=True)
     valid_loader = DataLoader(validset, num_workers=1, shuffle=False,
                               sampler=valid_sampler, batch_size=1, pin_memory=True)
+
+    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
+    optimizer = hvd.DistributedOptimizer(optimizer, named_parameters=model.named_parameters())
+
+    scheduler = StepLR(optimizer, step_size=200000, gamma=0.5)
+
+    # Load checkpoint if one exists
+    iteration = 0
+    if checkpoint_path != "":
+        model, optimizer, scheduler, iteration = load_checkpoint(checkpoint_path, model,
+                                                                 optimizer, scheduler)
+        iteration += 1  # next iteration is iteration + 1
+
     # Get shared output_directory ready
-    if rank == 0:
+    if hvd.rank() == 0:
         if not os.path.isdir(output_directory):
             os.makedirs(output_directory)
             os.chmod(output_directory, 0o775)
         print("output directory", output_directory)
-    
+
+    hvd.broadcast_parameters(model.state_dict(), root_rank=0)
+
     model.train()
     epoch_offset = max(0, int(iteration / len(train_loader)))
     writer = SummaryWriter(log_dir)
@@ -199,18 +204,15 @@ def train(num_gpus, rank, group_name, output_directory, epochs, learning_rate,
                 loss = criterion(y_pred, y, seq_lens)
             else:
                 loss = criterion(y_pred, y)
-            if num_gpus > 1:
-                reduced_loss = reduce_tensor(loss.data, num_gpus)[0]
-            else:
-                reduced_loss = loss.data[0]
+            reduced_loss = loss.data[0]
             loss.backward()
             optimizer.step()
 
             print("{}:\t{:.9f}".format(iteration, reduced_loss))
-            if rank == 0:
+            if hvd.rank() == 0:
                 writer.add_scalar('loss', reduced_loss, iteration)
             if (iteration % iters_per_checkpoint == 0 and iteration):
-                if rank == 0:
+                if hvd.rank() == 0:
                     checkpoint_path = "{}/wavenet_{}".format(
                         output_directory, iteration)
                     save_checkpoint(model, optimizer, scheduler, learning_rate, iteration,
@@ -218,10 +220,13 @@ def train(num_gpus, rank, group_name, output_directory, epochs, learning_rate,
             if (iteration % iters_per_eval == 0 and iteration > 0 and not config["no_validation"]):
                 if low_memory:
                     torch.cuda.empty_cache()
-                if rank == 0:
+                if hvd.rank() == 0:
                     model_eval = nv_wavenet.NVWaveNet(**(model.export_weights()))
                     for j, valid_batch in enumerate(valid_loader):
-                        mel, audio = valid_batch
+                        if train_data_config["no_chunks"]:
+                            mel, audio, _ = valid_batch
+                        else:
+                            mel, audio = valid_batch
                         mel = to_gpu(mel).float()
                         cond_input = model.get_cond_input(mel)
                         predicted_audio = model_eval.infer(cond_input, nv_wavenet.Impl.AUTO)
@@ -249,7 +254,7 @@ if __name__ == "__main__":
     parser.add_argument('-g', '--group_name', type=str, default='',
                         help='name of group for distributed')
     args = parser.parse_args()
-    
+
     # Parse configs.  Globals nicer in this case
     with open(args.config) as f:
         data = f.read()
@@ -270,19 +275,11 @@ if __name__ == "__main__":
 
     global dist_config
     dist_config = config["dist_config"]
-    global wavenet_config 
+    global wavenet_config
     wavenet_config = config["wavenet_config"]
 
     num_gpus = torch.cuda.device_count()
-    if num_gpus > 1:
-        if args.group_name == '':
-            print("WARNING: Multiple GPUs detected but no distributed group set")
-            print("Only running 1 GPU.  Use distributed.py for multiple GPUs")
-            num_gpus = 1
-    
-    if num_gpus == 1 and args.rank != 0:
-        raise Exception("Doing single GPU training on rank > 0")
-    
+    print("Number of gpus: {}".format(num_gpus))
     torch.backends.cudnn.enabled = True
     torch.backends.cudnn.benchmark = False
-    train(num_gpus, args.rank, args.group_name, **train_config)
+    train(**train_config)
