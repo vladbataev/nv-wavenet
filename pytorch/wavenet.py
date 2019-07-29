@@ -57,25 +57,33 @@ class Conv(torch.nn.Module):
 class WaveNet(torch.nn.Module):
     def __init__(self, n_in_channels, n_layers, max_dilation,
                  n_residual_channels, n_skip_channels, n_out_channels,
-                 n_cond_channels, upsamp_window, upsamp_stride):
+                 n_cond_channels, upsamp_window, upsamp_stride, use_conv2d=True):
         super(WaveNet, self).__init__()
 
         self.upsamp_window = upsamp_window
         self.upsamp_stride = upsamp_stride
-        upsample_layers = torch.nn.ModuleList()
-        for _ in range(2):
-            upsample_layers.append(
-                torch.nn.ConvTranspose2d(
-                    in_channels=1,
-                    out_channels=1,
-                    kernel_size=(3, 32),
-                    stride=(1, 16),
-                    padding=(1, 0),
-                )
-            )
-            upsample_layers.append(torch.nn.LeakyReLU(0.4, inplace=True))
+        self.use_conv2d = use_conv2d
 
-        self.upsample_layers = upsample_layers
+        if use_conv2d:
+            upsample_layers = torch.nn.ModuleList()
+            for _ in range(2):
+                upsample_layers.append(
+                    torch.nn.ConvTranspose2d(
+                        in_channels=1,
+                        out_channels=1,
+                        kernel_size=(3, 32),
+                        stride=(1, 16),
+                        padding=(1, 0),
+                    )
+                )
+                upsample_layers.append(torch.nn.LeakyReLU(0.4, inplace=True))
+            self.upsample_layers = upsample_layers
+        else:
+            self.upsample = torch.nn.ConvTranspose1d(n_cond_channels,
+                                                     n_cond_channels,
+                                                     upsamp_window,
+                                                     upsamp_stride)
+
         self.n_layers = n_layers
         self.max_dilation = max_dilation
         self.n_residual_channels = n_residual_channels
@@ -113,7 +121,7 @@ class WaveNet(torch.nn.Module):
                               w_init_gain='relu')
             self.skip_layers.append(skip_layer)
 
-    def upsample(self, inputs):
+    def _upsample(self, inputs):
         inputs = torch.unsqueeze(inputs, 1)
         x = inputs
         for l in self.upsample_layers:
