@@ -76,6 +76,7 @@ def get_latest_checkpoint(model_dir):
 
 def main(input_files, model_dir, output_dir, batch_size, implementation, data_config, audio_config, preload_mels=False):
     model_filename = get_latest_checkpoint(model_dir)
+    print("Model path: {}".format(model_filename))
     model = torch.load(model_filename)['model']
     wavenet = nv_wavenet.NVWaveNet(**(model.export_weights()))
     print("Wavenet num layers: {}, max_dilation: {}".format(wavenet.num_layers, wavenet.max_dilation))

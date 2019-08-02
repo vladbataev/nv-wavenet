@@ -28,7 +28,10 @@ import os
 import torch
 import torch.nn.functional as F
 import numpy as np
+
 from scipy.io.wavfile import read
+from wavenet import WaveNet
+
 MAX_WAV_VALUE = 32768.0
 
 def load_wav(full_path):
@@ -111,3 +114,66 @@ def collate_fn(batch, mel_min_value=-4.0):
         padded_audios.append(padded_audio)
         seq_lens.append(audio.size(0))
     return (torch.stack(padded_mels, 0), torch.stack(padded_audios, 0), torch.LongTensor(seq_lens))
+
+
+class ExponentialMovingAverage:
+    def __init__(self, decay):
+        self.decay = decay
+        self.shadow = {}
+
+    def register(self, name, val):
+        self.shadow[name] = val.clone()
+
+    def update(self, name, x):
+        assert name in self.shadow
+        new_average = self.decay * x + (1.0 - self.decay) * self.shadow[name]
+        self.shadow[name] = new_average.clone()
+
+
+def load_checkpoint(checkpoint_path, model, optimizer, scheduler, ema):
+    assert os.path.isfile(checkpoint_path)
+    checkpoint_dict = torch.load(checkpoint_path, map_location='cpu')
+    iteration = checkpoint_dict['iteration']
+    optimizer.load_state_dict(checkpoint_dict['optimizer'])
+    scheduler.load_state_dict(checkpoint_dict['scheduler'])
+    model_for_loading = checkpoint_dict['model']
+    model.load_state_dict(model_for_loading.state_dict())
+    print("Loaded checkpoint '{}' (iteration {})".format(
+        checkpoint_path, iteration))
+    checkpoint_dir = os.path.dirname(checkpoint_path)
+    ema_path = os.path.join(checkpoint_dir, "wavenet_ema_{}".format(iteration))
+    ema_dict = torch.load(ema_path, map_location='cpu')
+    ema_model = ema_dict['model']
+    for name, param in ema_model.named_parameters():
+        if param.requires_grad:
+            ema.register(name, param.data)
+    return model, optimizer, scheduler, iteration, ema
+
+
+def save_checkpoint(model, optimizer, scheduler, learning_rate, iteration, output_directory, ema, wavenet_config):
+    checkpoint_path = "{}/wavenet_{}".format(
+        output_directory, iteration)
+    print("Saving model and optimizer state at iteration {} to {}".format(
+        iteration, checkpoint_path))
+    model_for_saving = WaveNet(**wavenet_config).cuda()
+    model_for_saving.load_state_dict(model.state_dict())
+    torch.save({'model': model_for_saving,
+                'iteration': iteration,
+                'optimizer': optimizer.state_dict(),
+                'scheduler': scheduler.state_dict(),
+                'learning_rate': learning_rate}, checkpoint_path)
+    ema_path = "{}/wavenet_ema_{}".format(
+        output_directory, iteration)
+    print("Saving ema model at iteration {} to {}".format(
+        iteration, ema_path))
+
+    state_dict = model_for_saving.state_dict()
+    for name, _ in model.named_parameters():
+        if name in ema.shadow:
+            state_dict[name] = ema.shadow[name]
+    model_for_saving.load_state_dict(state_dict)
+    torch.save({'model': model_for_saving,
+                'iteration': iteration,
+                'optimizer': optimizer.state_dict(),
+                'scheduler': scheduler.state_dict(),
+                'learning_rate': learning_rate}, ema_path)

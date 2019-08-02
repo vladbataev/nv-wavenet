@@ -46,7 +46,7 @@ from torch.optim.lr_scheduler import StepLR
 from torch.utils.data import DataLoader
 from wavenet import WaveNet
 from mel2samp_onehot import Mel2SampOnehot
-from utils import to_gpu
+from utils import to_gpu, ExponentialMovingAverage, load_checkpoint, save_checkpoint
 
 
 class CrossEntropyLoss(torch.nn.Module):
@@ -96,33 +96,8 @@ class MaskedCrossEntropyLoss(nn.Module):
         return ((losses * mask).sum()) / mask.sum()
 
 
-def load_checkpoint(checkpoint_path, model, optimizer, scheduler):
-    assert os.path.isfile(checkpoint_path)
-    checkpoint_dict = torch.load(checkpoint_path, map_location='cpu')
-    iteration = checkpoint_dict['iteration']
-    optimizer.load_state_dict(checkpoint_dict['optimizer'])
-    scheduler.load_state_dict(checkpoint_dict['scheduler'])
-    model_for_loading = checkpoint_dict['model']
-    model.load_state_dict(model_for_loading.state_dict())
-    print("Loaded checkpoint '{}' (iteration {})".format(
-        checkpoint_path, iteration))
-    return model, optimizer, scheduler, iteration
-
-
-def save_checkpoint(model, optimizer, scheduler, learning_rate, iteration, filepath):
-    print("Saving model and optimizer state at iteration {} to {}".format(
-        iteration, filepath))
-    model_for_saving = WaveNet(**wavenet_config).cuda()
-    model_for_saving.load_state_dict(model.state_dict())
-    torch.save({'model': model_for_saving,
-                'iteration': iteration,
-                'optimizer': optimizer.state_dict(),
-                'scheduler': scheduler.state_dict(),
-                'learning_rate': learning_rate}, filepath)
-
-
 def train(output_directory, epochs, learning_rate,
-          iters_per_checkpoint, iters_per_eval, batch_size, seed, checkpoint_path, log_dir):
+          iters_per_checkpoint, iters_per_eval, batch_size, seed, checkpoint_path, log_dir, ema_decay=0.9999):
     torch.manual_seed(seed)
     torch.cuda.manual_seed(seed)
     # =====START: ADDED FOR DISTRIBUTED======
@@ -136,6 +111,10 @@ def train(output_directory, epochs, learning_rate,
     else:
         criterion = CrossEntropyLoss()
     model = WaveNet(**wavenet_config).cuda()
+    ema = ExponentialMovingAverage(ema_decay)
+    for name, param in model.named_parameters():
+        if param.requires_grad:
+            ema.register(name, param.data)
 
     trainset = Mel2SampOnehot(audio_config=audio_config, verbose=True, **train_data_config)
     validset = Mel2SampOnehot(audio_config=audio_config, verbose=False, **valid_data_config)
@@ -165,8 +144,8 @@ def train(output_directory, epochs, learning_rate,
     # Load checkpoint if one exists
     iteration = 0
     if checkpoint_path != "":
-        model, optimizer, scheduler, iteration = load_checkpoint(checkpoint_path, model,
-                                                                 optimizer, scheduler)
+        model, optimizer, scheduler, iteration, ema = load_checkpoint(checkpoint_path, model,
+                                                                      optimizer, scheduler, ema)
         iteration += 1  # next iteration is iteration + 1
 
     # Get shared output_directory ready
@@ -208,16 +187,18 @@ def train(output_directory, epochs, learning_rate,
             loss.backward()
             optimizer.step()
 
+            for name, param in model.named_parameters():
+                if name in ema.shadow:
+                    ema.update(name, param.data)
+
             print("{}:\t{:.9f}".format(iteration, reduced_loss))
             if hvd.rank() == 0:
                 writer.add_scalar('loss', reduced_loss, iteration)
-            if (iteration % iters_per_checkpoint == 0 and iteration):
+            if iteration % iters_per_checkpoint == 0 and iteration:
                 if hvd.rank() == 0:
-                    checkpoint_path = "{}/wavenet_{}".format(
-                        output_directory, iteration)
                     save_checkpoint(model, optimizer, scheduler, learning_rate, iteration,
-                                    checkpoint_path)
-            if (iteration % iters_per_eval == 0 and iteration > 0 and not config["no_validation"]):
+                                    output_directory, ema, wavenet_config)
+            if iteration % iters_per_eval == 0 and iteration > 0 and not config["no_validation"]:
                 if low_memory:
                     torch.cuda.empty_cache()
                 if hvd.rank() == 0:
